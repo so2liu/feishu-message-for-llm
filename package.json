@@ -1,0 +1,48 @@
+{
+  "name": "feishu-message-for-llm",
+  "version": "0.1.0",
+  "description": "将飞书消息转换为大模型（LLM）易于理解的 Markdown 格式",
+  "type": "module",
+  "main": "./dist/index.cjs",
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/so2liu/feishu-message-for-llm.git"
+  },
+  "keywords": [
+    "feishu",
+    "lark",
+    "llm",
+    "markdown",
+    "message",
+    "converter",
+    "ai",
+    "chatbot"
+  ],
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js",
+      "require": "./dist/index.cjs"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "engines": {
+    "node": ">=18"
+  },
+  "scripts": {
+    "build": "tsup",
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "@types/node": "^22.13.14",
+    "tsup": "^8.4.0",
+    "typescript": "^5.8.2",
+    "vitest": "^3.0.8"
+  }
+}
