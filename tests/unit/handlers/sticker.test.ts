@@ -72,6 +72,25 @@ describe("handleSticker", () => {
     });
   });
 
+  it("returns fallback text when sticker download fails", async () => {
+    const context = createContext();
+    vi.mocked(context.apiClient.downloadResource).mockRejectedValue(
+      new Error("boom"),
+    );
+
+    await expect(
+      handleSticker(
+        {
+          file_key: "stk:123",
+        },
+        context,
+      ),
+    ).resolves.toEqual({
+      text: "[贴纸下载失败: stk:123]",
+      attachments: [],
+    });
+  });
+
   it("registers the sticker handler", () => {
     expect(getHandler("sticker")).toBe(handleSticker);
   });

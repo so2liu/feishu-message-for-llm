@@ -49,39 +49,51 @@ export async function handleMedia(
   mkdirSync(messageDir, { recursive: true });
 
   const attachments: HandlerResult["attachments"] = [];
+  const textParts: string[] = [];
 
-  await context.apiClient.downloadResource(
-    context.messageId,
-    resolvedFileKey,
-    "video",
-    filePath,
-    context.maxFileSize,
-  );
-  attachments.push({
-    type: "video",
-    filePath,
-    fileName: resolvedFileName,
-  });
+  try {
+    await context.apiClient.downloadResource(
+      context.messageId,
+      resolvedFileKey,
+      "video",
+      filePath,
+      context.maxFileSize,
+    );
+    attachments.push({
+      type: "video",
+      filePath,
+      fileName: resolvedFileName,
+    });
+    textParts.push(
+      `[视频: ${resolvedFileName}, 时长: ${formatSeconds(duration)}秒](${filePath})`,
+    );
+  } catch {
+    textParts.push(`[视频下载失败: ${resolvedFileKey}]`);
+  }
 
   if (image_key) {
     const coverPath = join(messageDir, `${sanitizeFileName(image_key)}.png`);
 
-    await context.apiClient.downloadResource(
-      context.messageId,
-      image_key,
-      "image",
-      coverPath,
-      context.maxFileSize,
-    );
-    attachments.push({
-      type: "image",
-      filePath: coverPath,
-      mimeType: "image/png",
-    });
+    try {
+      await context.apiClient.downloadResource(
+        context.messageId,
+        image_key,
+        "image",
+        coverPath,
+        context.maxFileSize,
+      );
+      attachments.push({
+        type: "image",
+        filePath: coverPath,
+        mimeType: "image/png",
+      });
+    } catch {
+      textParts.push(`[图片下载失败: ${image_key}]`);
+    }
   }
 
   return {
-    text: `[视频: ${resolvedFileName}, 时长: ${formatSeconds(duration)}秒](${filePath})`,
+    text: textParts.join("\n"),
     attachments,
   };
 }

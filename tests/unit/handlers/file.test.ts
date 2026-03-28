@@ -118,6 +118,32 @@ describe("handleFile", () => {
     }
   });
 
+  it("returns fallback text when file download fails", async () => {
+    const downloadDir = await mkdtemp(join(tmpdir(), "file-handler-"));
+    const context = createContext(downloadDir);
+
+    vi.mocked(context.apiClient.downloadResource).mockRejectedValue(
+      new Error("boom"),
+    );
+
+    try {
+      await expect(
+        handleFile(
+          {
+            file_key: "file_123",
+            file_name: "design.psd",
+          },
+          context,
+        ),
+      ).resolves.toEqual({
+        text: "[文件下载失败: file_123]",
+        attachments: [],
+      });
+    } finally {
+      await rm(downloadDir, { recursive: true, force: true });
+    }
+  });
+
   it("registers the file handler", () => {
     expect(getHandler("file")).toBe(handleFile);
   });

@@ -72,6 +72,26 @@ describe("handleAudio", () => {
     });
   });
 
+  it("returns fallback text when audio download fails", async () => {
+    const context = createContext();
+    vi.mocked(context.apiClient.downloadResource).mockRejectedValue(
+      new Error("boom"),
+    );
+
+    await expect(
+      handleAudio(
+        {
+          file_key: "file:abc",
+          duration: 5000,
+        },
+        context,
+      ),
+    ).resolves.toEqual({
+      text: "[音频下载失败: file:abc]",
+      attachments: [],
+    });
+  });
+
   it("registers the audio handler", () => {
     expect(getHandler("audio")).toBe(handleAudio);
   });

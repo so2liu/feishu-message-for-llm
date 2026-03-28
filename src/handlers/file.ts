@@ -63,16 +63,24 @@ export async function handleFile(
   const resolvedFileName = file_name || file_key || "unnamed";
   const messageDir = join(context.downloadDir, sanitizeFileName(context.messageId));
   const filePath = join(messageDir, sanitizeFileName(resolvedFileName));
+  const resourceKey = file_key ?? resolvedFileName;
 
   mkdirSync(messageDir, { recursive: true });
 
-  await context.apiClient.downloadResource(
-    context.messageId,
-    file_key ?? resolvedFileName,
-    "file",
-    filePath,
-    context.maxFileSize,
-  );
+  try {
+    await context.apiClient.downloadResource(
+      context.messageId,
+      resourceKey,
+      "file",
+      filePath,
+      context.maxFileSize,
+    );
+  } catch {
+    return {
+      text: `[文件下载失败: ${resourceKey}]`,
+      attachments: [],
+    };
+  }
 
   let text = `[文件: ${resolvedFileName}](${filePath})`;
 

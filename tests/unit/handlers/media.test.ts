@@ -89,6 +89,38 @@ describe("handleMedia", () => {
     });
   });
 
+  it("returns fallback text and keeps successful attachments when downloads fail", async () => {
+    const context = createContext();
+    vi.mocked(context.apiClient.downloadResource).mockImplementation(
+      async (_messageId, fileKey) => {
+        if (fileKey === "file_abc") {
+          throw new Error("video boom");
+        }
+      },
+    );
+
+    const result = await handleMedia(
+      {
+        file_key: "file_abc",
+        image_key: "img_cover",
+        file_name: "演示?.mp4",
+        duration: 30000,
+      },
+      context,
+    );
+
+    expect(result).toEqual({
+      text: "[视频下载失败: file_abc]",
+      attachments: [
+        {
+          type: "image",
+          filePath: `${tmpdir()}/msg_123/img_cover.png`,
+          mimeType: "image/png",
+        },
+      ],
+    });
+  });
+
   it("registers the media handler", () => {
     expect(getHandler("media")).toBe(handleMedia);
   });

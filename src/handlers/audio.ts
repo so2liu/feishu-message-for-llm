@@ -44,13 +44,20 @@ export async function handleAudio(
 
   mkdirSync(messageDir, { recursive: true });
 
-  await context.apiClient.downloadResource(
-    context.messageId,
-    resolvedFileKey,
-    "audio",
-    filePath,
-    context.maxFileSize,
-  );
+  try {
+    await context.apiClient.downloadResource(
+      context.messageId,
+      resolvedFileKey,
+      "audio",
+      filePath,
+      context.maxFileSize,
+    );
+  } catch {
+    return {
+      text: `[音频下载失败: ${resolvedFileKey}]`,
+      attachments: [],
+    };
+  }
 
   return {
     text: `[语音消息, 时长: ${formatSeconds(duration)}秒](${filePath})`,

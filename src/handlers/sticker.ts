@@ -35,13 +35,20 @@ export async function handleSticker(
 
   mkdirSync(messageDir, { recursive: true });
 
-  await context.apiClient.downloadResource(
-    context.messageId,
-    resolvedFileKey,
-    "sticker",
-    filePath,
-    context.maxFileSize,
-  );
+  try {
+    await context.apiClient.downloadResource(
+      context.messageId,
+      resolvedFileKey,
+      "sticker",
+      filePath,
+      context.maxFileSize,
+    );
+  } catch {
+    return {
+      text: `[贴纸下载失败: ${resolvedFileKey}]`,
+      attachments: [],
+    };
+  }
 
   return {
     text: `[贴纸](${filePath})`,

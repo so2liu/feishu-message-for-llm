@@ -123,6 +123,25 @@ describe("handlePost", () => {
     });
   });
 
+  it("falls back to mention key when mention mapping is missing", async () => {
+    const result = await handlePost(
+      {
+        content: [
+          [
+            { tag: "at", user_id: "@_user_1" },
+            { tag: "text", text: " 请处理", style: [] },
+          ],
+        ],
+      },
+      createContext(),
+    );
+
+    expect(result).toEqual({
+      text: "@_user_1 请处理",
+      attachments: [],
+    });
+  });
+
   it("renders code blocks", async () => {
     const result = await handlePost(
       {
@@ -208,5 +227,59 @@ describe("handlePost", () => {
       `${tmpdir()}/${sanitizeFileName("msg/123")}/${sanitizeFileName("../../video")}.mp4`,
       undefined,
     );
+  });
+
+  it("returns fallback text when embedded image download fails", async () => {
+    const context = createContext();
+    vi.mocked(context.apiClient.downloadResource).mockRejectedValue(
+      new Error("boom"),
+    );
+
+    await expect(
+      handlePost(
+        {
+          content: [[{ tag: "img", image_key: "img_123" }]],
+        },
+        context,
+      ),
+    ).resolves.toEqual({
+      text: "[图片下载失败: img_123]",
+      attachments: [],
+    });
+  });
+
+  it("returns fallback text when embedded media download fails", async () => {
+    const context = createContext({
+      messageId: "msg/123",
+      downloadDir: tmpdir(),
+    });
+    vi.mocked(context.apiClient.downloadResource).mockImplementation(
+      async (_messageId, fileKey) => {
+        if (fileKey === "../../video") {
+          throw new Error("boom");
+        }
+      },
+    );
+
+    await expect(
+      handlePost(
+        {
+          content: [
+            [
+              { tag: "media", file_key: "../../video", image_key: "..\\thumb" },
+            ],
+          ],
+        },
+        context,
+      ),
+    ).resolves.toEqual({
+      text: "[视频下载失败: ../../video]",
+      attachments: [
+        {
+          type: "image",
+          filePath: `${tmpdir()}/${sanitizeFileName("msg/123")}/${sanitizeFileName("..\\thumb")}.png`,
+        },
+      ],
+    });
   });
 });

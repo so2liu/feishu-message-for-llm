@@ -104,7 +104,7 @@ function getMentionDisplay(tag: MentionPostTag, mentions: Mention[]): string {
     return `@${tag.user_name}`;
   }
 
-  return "";
+  return tag.user_id ?? "";
 }
 
 async function getLinkText(
@@ -190,13 +190,20 @@ async function renderTag(
       const filePath = join(messageDir, `${sanitizeFileName(tag.image_key)}.png`);
 
       mkdirSync(messageDir, { recursive: true });
-      await context.apiClient.downloadResource(
-        context.messageId,
-        tag.image_key,
-        "image",
-        filePath,
-        context.maxFileSize,
-      );
+      try {
+        await context.apiClient.downloadResource(
+          context.messageId,
+          tag.image_key,
+          "image",
+          filePath,
+          context.maxFileSize,
+        );
+      } catch {
+        return {
+          text: `[图片下载失败: ${tag.image_key}]`,
+          attachments: [],
+        };
+      }
 
       return {
         text: `![图片](${filePath})`,
@@ -212,6 +219,7 @@ async function renderTag(
       }
 
       const attachments: Attachment[] = [];
+      const textParts: string[] = [];
       const messageDir = resolveMessageDir(context);
 
       mkdirSync(messageDir, { recursive: true });
@@ -221,32 +229,41 @@ async function renderTag(
           messageDir,
           `${sanitizeFileName(tag.image_key)}.png`,
         );
-        await context.apiClient.downloadResource(
-          context.messageId,
-          tag.image_key,
-          "image",
-          coverPath,
-          context.maxFileSize,
-        );
-        attachments.push({ type: "image", filePath: coverPath });
+        try {
+          await context.apiClient.downloadResource(
+            context.messageId,
+            tag.image_key,
+            "image",
+            coverPath,
+            context.maxFileSize,
+          );
+          attachments.push({ type: "image", filePath: coverPath });
+        } catch {
+          textParts.push(`[图片下载失败: ${tag.image_key}]`);
+        }
       }
 
       if (!tag.file_key) {
-        return { text: "", attachments };
+        return { text: textParts.join(" "), attachments };
       }
 
       const filePath = join(messageDir, `${sanitizeFileName(tag.file_key)}.mp4`);
-      await context.apiClient.downloadResource(
-        context.messageId,
-        tag.file_key,
-        "video",
-        filePath,
-        context.maxFileSize,
-      );
-      attachments.unshift({ type: "video", filePath });
+      try {
+        await context.apiClient.downloadResource(
+          context.messageId,
+          tag.file_key,
+          "video",
+          filePath,
+          context.maxFileSize,
+        );
+        attachments.unshift({ type: "video", filePath });
+        textParts.push(`[视频](${filePath})`);
+      } catch {
+        textParts.push(`[视频下载失败: ${tag.file_key}]`);
+      }
 
       return {
-        text: `[视频](${filePath})`,
+        text: textParts.join(" "),
         attachments,
       };
     }
