@@ -1,6 +1,6 @@
 {
   "name": "feishu-message-for-llm",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "将飞书消息转换为大模型（LLM）易于理解的 Markdown 格式",
   "type": "module",
   "main": "./dist/index.cjs",
