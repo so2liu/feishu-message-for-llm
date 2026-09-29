@@ -10,9 +10,28 @@ import type {
   FeishuApiClient,
   FeishuApiMessage,
 } from "./types.js";
+import { BoundedMap } from "./utils/bounded-map.js";
 
 const FEISHU_API_BASE_URL = "https://open.feishu.cn/open-apis";
 const TOKEN_REFRESH_BUFFER_MS = 60_000;
+const NAME_CACHE_MAX_SIZE = 2000;
+// 大群的成员名单较大，缓存的群数量上限设得比用户名、群名小
+const CHAT_MEMBERS_CACHE_MAX_SIZE = 200;
+const CHAT_MEMBERS_CACHE_TTL_MS = 5 * 60_000;
+const CHAT_MEMBERS_PAGE_SIZE = 100;
+
+export interface ListChatMessagesParams {
+  pageSize: number;
+  pageToken?: string;
+  startTime?: number;
+  endTime?: number;
+}
+
+export interface ChatMessagePage {
+  items: FeishuApiMessage[];
+  pageToken?: string;
+  hasMore: boolean;
+}
 
 type FeishuApiEnvelope<T> = {
   code: number;
@@ -37,8 +56,17 @@ export class FeishuApiClientImpl implements FeishuApiClient {
   private tenantAccessToken: string | null = null;
   private tokenExpiresAt = 0;
   private tokenRefreshPromise: Promise<string> | null = null;
-  private readonly userCache = new Map<string, { name: string }>();
-  private readonly chatCache = new Map<string, { name: string }>();
+  private readonly userCache = new BoundedMap<string, Promise<{ name: string }>>(
+    NAME_CACHE_MAX_SIZE,
+  );
+  private readonly chatCache = new BoundedMap<string, Promise<{ name: string }>>(
+    NAME_CACHE_MAX_SIZE,
+  );
+  private readonly chatMembersCache = new BoundedMap<
+    string,
+    { expiresAt: number; names: Promise<Map<string, string>> }
+  >(CHAT_MEMBERS_CACHE_MAX_SIZE);
+  private botNamePromise: Promise<string> | null = null;
 
   constructor(
     private readonly appId: string,
@@ -62,47 +90,104 @@ export class FeishuApiClientImpl implements FeishuApiClient {
   }
 
   async getUserInfo(openId: string): Promise<{ name: string }> {
-    const cached = this.userCache.get(openId);
+    return this.cachedLookup(this.userCache, openId, async () => {
+      const data = await this.request<{ user?: { name?: string } }>(
+        `/contact/v3/users/${encodeURIComponent(openId)}?user_id_type=open_id`,
+      );
 
-    if (cached) {
-      return cached;
-    }
-
-    const data = await this.request<{ user?: { name?: string } }>(
-      `/contact/v3/users/${encodeURIComponent(openId)}?user_id_type=open_id`,
-    );
-    const user = {
-      name: this.requireString(
-        data.user?.name,
-        `Missing user name for open_id ${openId}`,
-      ),
-    };
-
-    this.userCache.set(openId, user);
-
-    return user;
+      return {
+        name: this.requireString(
+          data.user?.name,
+          `Missing user name for open_id ${openId}`,
+        ),
+      };
+    });
   }
 
   async getChatInfo(chatId: string): Promise<{ name: string }> {
-    const cached = this.chatCache.get(chatId);
+    return this.cachedLookup(this.chatCache, chatId, async () => {
+      const data = await this.request<{ chat?: { name?: string }; name?: string }>(
+        `/im/v1/chats/${encodeURIComponent(chatId)}`,
+      );
 
-    if (cached) {
-      return cached;
+      return {
+        name: this.requireString(
+          data.chat?.name ?? data.name,
+          `Missing chat name for chat_id ${chatId}`,
+        ),
+      };
+    });
+  }
+
+  /** 群成员 open_id → 名字，按群缓存 5 分钟 */
+  async getChatMemberNames(chatId: string): Promise<Map<string, string>> {
+    const cached = this.chatMembersCache.get(chatId);
+
+    if (cached && Date.now() < cached.expiresAt) {
+      return cached.names;
     }
 
-    const data = await this.request<{ chat?: { name?: string }; name?: string }>(
-      `/im/v1/chats/${encodeURIComponent(chatId)}`,
-    );
-    const chat = {
-      name: this.requireString(
-        data.chat?.name ?? data.name,
-        `Missing chat name for chat_id ${chatId}`,
-      ),
+    const names = this.fetchChatMemberNames(chatId);
+
+    this.chatMembersCache.set(chatId, {
+      expiresAt: Date.now() + CHAT_MEMBERS_CACHE_TTL_MS,
+      names,
+    });
+    names.catch(() => {
+      if (this.chatMembersCache.get(chatId)?.names === names) {
+        this.chatMembersCache.delete(chatId);
+      }
+    });
+
+    return names;
+  }
+
+  /** 当前应用机器人的名字，成功后缓存 */
+  async getBotName(): Promise<string> {
+    if (!this.botNamePromise) {
+      this.botNamePromise = this.fetchBotName();
+      this.botNamePromise.catch(() => {
+        this.botNamePromise = null;
+      });
+    }
+
+    return this.botNamePromise;
+  }
+
+  async listChatMessages(
+    chatId: string,
+    params: ListChatMessagesParams,
+  ): Promise<ChatMessagePage> {
+    const searchParams = new URLSearchParams({
+      container_id_type: "chat",
+      container_id: chatId,
+      sort_type: "ByCreateTimeDesc",
+      page_size: String(params.pageSize),
+    });
+
+    if (params.pageToken) {
+      searchParams.set("page_token", params.pageToken);
+    }
+
+    if (params.startTime !== undefined) {
+      searchParams.set("start_time", String(params.startTime));
+    }
+
+    if (params.endTime !== undefined) {
+      searchParams.set("end_time", String(params.endTime));
+    }
+
+    const data = await this.request<{
+      items?: FeishuApiMessage[];
+      page_token?: string;
+      has_more?: boolean;
+    }>(`/im/v1/messages?${searchParams.toString()}`);
+
+    return {
+      items: data.items ?? [],
+      pageToken: data.page_token || undefined,
+      hasMore: data.has_more === true,
     };
-
-    this.chatCache.set(chatId, chat);
-
-    return chat;
   }
 
   async getMessage(messageId: string): Promise<FeishuApiMessage> {
@@ -205,6 +290,79 @@ export class FeishuApiClientImpl implements FeishuApiClient {
       default:
         throw new Error(`Unsupported Feishu doc type: ${docType}`);
     }
+  }
+
+  private cachedLookup<T>(
+    cache: BoundedMap<string, Promise<T>>,
+    key: string,
+    load: () => Promise<T>,
+  ): Promise<T> {
+    const cached = cache.get(key);
+
+    if (cached) {
+      return cached;
+    }
+
+    const pending = load();
+
+    cache.set(key, pending);
+    // 失败不缓存，下次重新请求
+    pending.catch(() => {
+      if (cache.get(key) === pending) {
+        cache.delete(key);
+      }
+    });
+
+    return pending;
+  }
+
+  private async fetchChatMemberNames(chatId: string): Promise<Map<string, string>> {
+    const names = new Map<string, string>();
+    let pageToken: string | undefined;
+
+    do {
+      const searchParams = new URLSearchParams({
+        member_id_type: "open_id",
+        page_size: String(CHAT_MEMBERS_PAGE_SIZE),
+      });
+
+      if (pageToken) {
+        searchParams.set("page_token", pageToken);
+      }
+
+      const data = await this.request<{
+        items?: Array<{ member_id?: string; name?: string }>;
+        page_token?: string;
+        has_more?: boolean;
+      }>(
+        `/im/v1/chats/${encodeURIComponent(chatId)}/members?${searchParams.toString()}`,
+      );
+
+      for (const item of data.items ?? []) {
+        if (item.member_id && item.name) {
+          names.set(item.member_id, item.name);
+        }
+      }
+
+      pageToken = data.has_more ? data.page_token || undefined : undefined;
+    } while (pageToken);
+
+    return names;
+  }
+
+  private async fetchBotName(): Promise<string> {
+    // bot/v3/info 的数据在顶层 bot 字段，不在 data 里
+    const payload = await this.fetchJson<{
+      code: number;
+      msg: string;
+      bot?: { app_name?: string };
+    }>(`${FEISHU_API_BASE_URL}/bot/v3/info`);
+
+    if (payload.code !== 0) {
+      throw new Error(`Feishu API request failed: ${payload.code} ${payload.msg}`);
+    }
+
+    return this.requireString(payload.bot?.app_name, "Missing bot app_name");
   }
 
   private hasValidTenantAccessToken(): boolean {

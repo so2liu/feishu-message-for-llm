@@ -3,6 +3,10 @@ export interface ConverterConfig {
   appSecret: string;
   downloadDir?: string;
   maxFileSize?: number;
+  /** 是否下载图片、文件等资源，默认 true。为 false 时只输出占位文本，不发请求、不写盘 */
+  downloadResources?: boolean;
+  /** 回复引用最多向上展开几层，默认 5。0 表示不展开，只输出引用行 */
+  maxParentDepth?: number;
 }
 
 export interface Mention {
@@ -46,10 +50,13 @@ export interface FeishuApiMessage {
   message_id: string;
   root_id?: string;
   parent_id?: string;
+  thread_id?: string;
   msg_type: string;
   create_time: string;
   update_time: string;
   chat_id: string;
+  deleted?: boolean;
+  updated?: boolean;
   sender: {
     id: string;
     id_type: string;
@@ -61,7 +68,9 @@ export interface FeishuApiMessage {
   };
   mentions?: Array<{
     key: string;
+    /** open_id；被 @ 的是机器人时为 app_id */
     id: string;
+    id_type?: string;
     name: string;
     tenant_key: string;
   }>;
@@ -95,10 +104,39 @@ export interface MessageMetadata {
 
 export interface ConvertResult {
   markdown: string;
+  /** 不带「**发送人(id)：**」抬头的正文 */
+  bodyMarkdown: string;
   attachments: Attachment[];
   metadata: MessageMetadata;
   rawContent: string;
   parentMessage?: ConvertResult;
+}
+
+export type ChatType = "p2p" | "group";
+
+export interface ConvertApiMessageOptions {
+  /** 默认 "group" */
+  chatType?: ChatType;
+}
+
+export interface FetchChatHistoryOptions {
+  /** 每页条数，默认 20，最大 50 */
+  pageSize?: number;
+  /** 上一页返回的 nextPageToken，用于继续往更早翻 */
+  pageToken?: string;
+  /** 起始时间，秒级时间戳 */
+  startTime?: number;
+  /** 结束时间，秒级时间戳 */
+  endTime?: number;
+  /** 默认 "group"；为 "group" 时优先用群成员列表解析发送人名字 */
+  chatType?: ChatType;
+}
+
+export interface ChatHistoryResult {
+  /** 按时间升序排列（最老在前） */
+  messages: ConvertResult[];
+  nextPageToken?: string;
+  hasMore: boolean;
 }
 
 export interface FeishuApiClient {
@@ -124,6 +162,10 @@ export interface HandlerContext {
   messageType: string;
   downloadDir: string;
   maxFileSize?: number;
+  /** 未设置时视为 true */
+  downloadResources?: boolean;
+  /** 解析合并转发子消息的发送人，返回「名字(id)」 */
+  resolveSenderLabel?: (message: FeishuApiMessage) => Promise<string>;
   convertMessageBody: (
     apiMessage: FeishuApiMessage,
     depth: number,

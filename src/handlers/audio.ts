@@ -35,6 +35,14 @@ export async function handleAudio(
   context: HandlerContext,
 ): Promise<HandlerResult> {
   const { file_key, duration } = parseAudioContent(content);
+
+  if (context.downloadResources === false) {
+    return {
+      text: `[语音消息, 时长: ${formatSeconds(duration)}秒]`,
+      attachments: [],
+    };
+  }
+
   const resolvedFileKey = file_key ?? "audio";
   const messageDir = join(context.downloadDir, sanitizeFileName(context.messageId));
   const filePath = join(

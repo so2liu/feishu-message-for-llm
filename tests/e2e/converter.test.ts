@@ -1,11 +1,16 @@
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { mkdtemp, readdir, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { FeishuMessageConverter } from "../../src/index.js";
-import type { FeishuApiMessage, FeishuMessageEvent, Mention } from "../../src/types.js";
+import type {
+  ConverterConfig,
+  FeishuApiMessage,
+  FeishuMessageEvent,
+  Mention,
+} from "../../src/types.js";
 
 interface HarnessState {
   userNames: Record<string, string>;
@@ -14,6 +19,9 @@ interface HarnessState {
   messages: Record<string, FeishuApiMessage>;
   mergeForwardMessages: Record<string, FeishuApiMessage[]>;
   resources: Map<string, BodyInit>;
+  historyItems: FeishuApiMessage[];
+  chatMembers: Record<string, string>;
+  botName?: string;
 }
 
 interface EventOptions {
@@ -44,6 +52,7 @@ interface ApiMessageOptions {
   chatId?: string;
   createTime?: string;
   updateTime?: string;
+  deleted?: boolean;
 }
 
 const tempDirs: string[] = [];
@@ -139,6 +148,7 @@ function createApiMessage(options: ApiMessageOptions = {}): FeishuApiMessage {
       content: options.content ?? '{"text":"default"}',
     },
     mentions: options.mentions,
+    deleted: options.deleted,
   };
 }
 
@@ -172,6 +182,34 @@ function createFetchMock(state: HarnessState) {
       }
 
       return new Response(body, { status: 200 });
+    }
+
+    if (url.pathname.endsWith("/bot/v3/info")) {
+      return state.botName
+        ? jsonResponse({ code: 0, msg: "ok", bot: { app_name: state.botName } })
+        : jsonResponse({ code: 9999, msg: "bot info failed" });
+    }
+
+    if (url.pathname.endsWith("/im/v1/messages")) {
+      return jsonResponse({
+        code: 0,
+        msg: "ok",
+        data: { items: state.historyItems, has_more: true, page_token: "next_page" },
+      });
+    }
+
+    if (/\/im\/v1\/chats\/[^/]+\/members$/.test(url.pathname)) {
+      return jsonResponse({
+        code: 0,
+        msg: "ok",
+        data: {
+          items: Object.entries(state.chatMembers).map(([memberId, name]) => ({
+            member_id: memberId,
+            name,
+          })),
+          has_more: false,
+        },
+      });
     }
 
     if (url.pathname.includes("/contact/v3/users/")) {
@@ -236,7 +274,10 @@ function createFetchMock(state: HarnessState) {
   });
 }
 
-async function createHarness(seed?: Partial<HarnessState>) {
+async function createHarness(
+  seed?: Partial<HarnessState>,
+  config?: Partial<ConverterConfig>,
+) {
   const downloadDir = await mkdtemp(join(tmpdir(), "feishu-converter-e2e-"));
   tempDirs.push(downloadDir);
 
@@ -247,6 +288,9 @@ async function createHarness(seed?: Partial<HarnessState>) {
     messages: seed?.messages ?? {},
     mergeForwardMessages: seed?.mergeForwardMessages ?? {},
     resources: seed?.resources ?? new Map<string, BodyInit>(),
+    historyItems: seed?.historyItems ?? [],
+    chatMembers: seed?.chatMembers ?? {},
+    botName: seed?.botName,
   };
 
   const mockFetch = createFetchMock(state);
@@ -257,6 +301,7 @@ async function createHarness(seed?: Partial<HarnessState>) {
       appId: "cli_test",
       appSecret: "secret_test",
       downloadDir,
+      ...config,
     }),
     downloadDir,
     mockFetch,
@@ -743,6 +788,169 @@ describe("FeishuMessageConverter E2E", () => {
 
       expect(result.markdown).toBe("**应用(ou_bot)：**\n\n机器人提醒");
       expect(result.metadata.senderType).toBe("bot");
+    });
+  });
+
+  describe("关闭资源下载", () => {
+    it("所有资源类消息只输出占位文本，不发下载请求、不创建目录", async () => {
+      const parentMessage = createApiMessage({
+        messageId: "om_parent_media",
+        messageType: "media",
+        senderOpenId: "ou_parent",
+        content: '{"file_key":"file_video","image_key":"img_cover","file_name":"演示.mp4","duration":30000}',
+      });
+      const { converter, downloadDir, mockFetch } = await createHarness(
+        {
+          userNames: { ou_sender: "张三", ou_parent: "李四" },
+          messages: { om_parent_media: parentMessage },
+        },
+        { downloadResources: false },
+      );
+      const cases: Array<[string, string, string]> = [
+        ["image", '{"image_key":"img_1"}', "[图片]"],
+        ["file", '{"file_key":"file_1","file_name":"error.log"}', "[文件: error.log]"],
+        ["audio", '{"file_key":"file_audio","duration":5000}', "[语音消息, 时长: 5秒]"],
+        ["sticker", '{"file_key":"file_sticker"}', "[贴纸]"],
+        [
+          "post",
+          '{"title":"","content":[[{"tag":"img","image_key":"img_post"}]]}',
+          "[图片]",
+        ],
+      ];
+
+      for (const [messageType, content, expected] of cases) {
+        const result = await converter.convert(
+          createEvent({ messageId: `om_${messageType}`, messageType, content }),
+        );
+
+        expect(result.bodyMarkdown).toBe(expected);
+        expect(result.attachments).toEqual([]);
+      }
+
+      const reply = await converter.convert(
+        createEvent({
+          messageId: "om_reply_media",
+          parentId: "om_parent_media",
+          content: '{"text":"看这个"}',
+        }),
+      );
+
+      expect(reply.bodyMarkdown).toBe(
+        "> 回复 **李四(ou_parent)** 的消息：\n> [视频: 演示.mp4, 时长: 30秒]\n\n看这个",
+      );
+      expect(reply.attachments).toEqual([]);
+
+      const requestedUrls = mockFetch.mock.calls.map(([input]) => String(input));
+
+      expect(requestedUrls.some((url) => url.includes("/resources/"))).toBe(false);
+      expect(await readdir(downloadDir)).toEqual([]);
+    });
+  });
+
+  describe("fetchChatHistory", () => {
+    it("按时间升序输出，页内引用不调 getMessage，页外引用受深度限制", async () => {
+      const botAppId = "cli_test";
+      const historyItems = [
+        createApiMessage({
+          messageId: "om_4",
+          createTime: "1710000004000",
+          senderOpenId: "ou_b",
+          parentId: "om_outside",
+          content: '{"text":"回复页外消息"}',
+        }),
+        createApiMessage({
+          messageId: "om_3",
+          createTime: "1710000003000",
+          senderOpenId: "ou_a",
+          deleted: true,
+          content: '{"text":"This message was recalled"}',
+        }),
+        createApiMessage({
+          messageId: "om_2",
+          createTime: "1710000002000",
+          senderOpenId: botAppId,
+          senderType: "app",
+          parentId: "om_1",
+          messageType: "post",
+          content: '{"title":"","content":[[{"tag":"text","text":"收到"}]]}',
+        }),
+        createApiMessage({
+          messageId: "om_1",
+          createTime: "1710000001000",
+          senderOpenId: "ou_a",
+          content: '{"text":"@_user_1 帮我看看"}',
+          mentions: [
+            { key: "@_user_1", id: botAppId, id_type: "app_id", name: "Blade Agent", tenant_key: "t" },
+          ],
+        }),
+      ];
+      const { converter, mockFetch } = await createHarness(
+        {
+          historyItems,
+          chatMembers: { ou_a: "张三", ou_b: "李四" },
+          botName: "Blade Agent",
+          messages: {
+            om_outside: createApiMessage({
+              messageId: "om_outside",
+              senderOpenId: "ou_a",
+              parentId: "om_older",
+              content: '{"text":"页外消息"}',
+            }),
+          },
+        },
+        { maxParentDepth: 1 },
+      );
+
+      const history = await converter.fetchChatHistory("oc_test_chat", {
+        pageSize: 4,
+      });
+
+      expect(history.hasMore).toBe(true);
+      expect(history.nextPageToken).toBe("next_page");
+      expect(history.messages.map((item) => item.markdown)).toEqual([
+        "**张三(ou_a)：**\n\n@Blade Agent(cli_test) 帮我看看",
+        "**Blade Agent(cli_test)：**\n\n> 回复 **张三(ou_a)** 的消息：\n> @Blade Agent(cli_test) 帮我看看\n\n收到",
+        "**张三(ou_a)：**\n\n[消息已撤回]",
+        "**李四(ou_b)：**\n\n> 回复 **张三(ou_a)** 的消息：\n> > 回复消息(parent_id: om_older)\n> \n> 页外消息\n\n回复页外消息",
+      ]);
+
+      const requestedPaths = mockFetch.mock.calls.map(
+        ([input]) => new URL(String(input)).pathname,
+      );
+
+      expect(requestedPaths.filter((path) => /\/messages\/[^/]+$/.test(path))).toEqual([
+        "/open-apis/im/v1/messages/om_outside",
+      ]);
+      expect(requestedPaths.some((path) => path.includes("/contact/v3/users/"))).toBe(false);
+    });
+
+    it("maxParentDepth 为 0 时不展开引用", async () => {
+      const { converter, mockFetch } = await createHarness(
+        {
+          historyItems: [
+            createApiMessage({ messageId: "om_1", createTime: "1", content: '{"text":"原消息"}' }),
+            createApiMessage({
+              messageId: "om_2",
+              createTime: "2",
+              parentId: "om_1",
+              content: '{"text":"回复"}',
+            }),
+          ],
+          userNames: { ou_api_sender: "王五" },
+        },
+        { maxParentDepth: 0 },
+      );
+
+      const history = await converter.fetchChatHistory("oc_test_chat");
+
+      expect(history.messages[1]?.bodyMarkdown).toBe(
+        "> 回复消息(parent_id: om_1)\n\n回复",
+      );
+      expect(
+        mockFetch.mock.calls.some(([input]) =>
+          /\/messages\/[^/]+$/.test(new URL(String(input)).pathname),
+        ),
+      ).toBe(false);
     });
   });
 });

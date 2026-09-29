@@ -43,6 +43,14 @@ export async function handleMedia(
   const { file_key, image_key, file_name, duration } = parseMediaContent(content);
   const resolvedFileKey = file_key ?? "video";
   const resolvedFileName = file_name || `${resolvedFileKey}.mp4`;
+
+  if (context.downloadResources === false) {
+    return {
+      text: `[视频: ${resolvedFileName}, 时长: ${formatSeconds(duration)}秒]`,
+      attachments: [],
+    };
+  }
+
   const messageDir = join(context.downloadDir, sanitizeFileName(context.messageId));
   const filePath = join(messageDir, sanitizeFileName(resolvedFileName));
 

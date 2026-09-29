@@ -179,7 +179,7 @@ async function renderTag(
         return { text: "", attachments: [] };
       }
 
-      if (plainText) {
+      if (plainText || context.downloadResources === false) {
         return {
           text: "[图片]",
           attachments: [],
@@ -211,7 +211,7 @@ async function renderTag(
       };
     }
     case "media": {
-      if (plainText) {
+      if (plainText || context.downloadResources === false) {
         return {
           text: "[视频]",
           attachments: [],

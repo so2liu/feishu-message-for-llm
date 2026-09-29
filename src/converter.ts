@@ -3,17 +3,24 @@ import { tmpdir } from "node:os";
 import { FeishuApiClientImpl } from "./api-client.js";
 import { getHandler } from "./handlers/index.js";
 import type {
+  ChatHistoryResult,
+  ChatType,
+  ConvertApiMessageOptions,
   ConvertResult,
   ConverterConfig,
   FeishuApiMessage,
   FeishuMessageEvent,
+  FetchChatHistoryOptions,
   HandlerContext,
   HandlerResult,
   Mention,
   MessageMetadata,
 } from "./types.js";
 
-const MAX_PARENT_DEPTH = 5;
+const DEFAULT_MAX_PARENT_DEPTH = 5;
+const DEFAULT_HISTORY_PAGE_SIZE = 20;
+const MAX_HISTORY_PAGE_SIZE = 50;
+const RECALLED_MESSAGE_TEXT = "[消息已撤回]";
 
 interface SenderInfo {
   senderId: string;
@@ -22,15 +29,40 @@ interface SenderInfo {
   senderType: string;
 }
 
-interface InternalConvertResult {
-  result: ConvertResult;
-  bodyMarkdown: string;
+/** 统一事件消息和 API 消息后的消息结构 */
+interface NormalizedMessage {
+  messageId: string;
+  messageType: string;
+  rawContent: string;
+  mentions: Mention[];
+  senderId: string;
+  senderType: string;
+  chatId: string;
+  createTime: string;
+  updateTime: string;
+  rootId?: string;
+  parentId?: string;
+  threadId?: string;
+  deleted?: boolean;
+}
+
+/** 一次顶层转换内共享的上下文 */
+interface ConvertScope {
+  chatType: ChatType;
+  visitedIds: Set<string>;
+  /** 群成员 open_id → 名字，优先于通讯录接口 */
+  memberNames?: Map<string, string>;
+  /** 同一页历史消息，被引用时直接复用，不再调 getMessage */
+  pageMessages?: Map<string, FeishuApiMessage>;
 }
 
 export class FeishuMessageConverter {
   private readonly apiClient: FeishuApiClientImpl;
+  private readonly appId: string;
   private readonly downloadDir: string;
   private readonly maxFileSize?: number;
+  private readonly downloadResources: boolean;
+  private readonly maxParentDepth: number;
 
   constructor(config: ConverterConfig) {
     if (config.appId.trim().length === 0) {
@@ -55,191 +87,211 @@ export class FeishuMessageConverter {
       throw new Error("ConverterConfig.maxFileSize must be a positive number");
     }
 
+    if (
+      config.maxParentDepth !== undefined &&
+      (!Number.isInteger(config.maxParentDepth) || config.maxParentDepth < 0)
+    ) {
+      throw new Error("ConverterConfig.maxParentDepth must be a non-negative integer");
+    }
+
     this.apiClient = new FeishuApiClientImpl(config.appId, config.appSecret);
+    this.appId = config.appId;
     this.downloadDir = config.downloadDir ?? tmpdir();
     this.maxFileSize = config.maxFileSize;
+    this.downloadResources = config.downloadResources ?? true;
+    this.maxParentDepth = config.maxParentDepth ?? DEFAULT_MAX_PARENT_DEPTH;
   }
 
   async convert(event: FeishuMessageEvent): Promise<ConvertResult> {
-    const visitedIds = new Set<string>([event.message.message_id]);
-    const result = await this.convertEventMessage(event, visitedIds, 0);
+    const { message, sender } = event;
 
-    return result.result;
-  }
-
-  private async convertEventMessage(
-    event: FeishuMessageEvent,
-    visitedIds: Set<string>,
-    depth: number,
-  ): Promise<InternalConvertResult> {
-    const senderId = event.sender.sender_id.open_id;
-    const rawContent = event.message.content;
-    const { content, parseFailed } = this.parseContent(rawContent);
-    const mentions = event.message.mentions ?? [];
-    const handler = parseFailed
-      ? getHandler("__unknown__")
-      : getHandler(event.message.message_type);
-
-    const [sender, parentMessage, handlerResult] = await Promise.all([
-      this.resolveSenderInfo(senderId, event.sender.sender_type),
-      event.message.parent_id
-        ? this.resolveParentMessage(
-            event.message.parent_id,
-            visitedIds,
-            depth,
-            event.message.chat_type,
-            event.message.thread_id,
-          )
-        : Promise.resolve(null),
-      handler(
-        content,
-        this.createHandlerContext(
-          mentions,
-          event.message.message_id,
-          event.message.message_type,
-          depth,
-        ),
-      ),
-    ]);
-
-    const referenceBlock = event.message.parent_id
-      ? this.renderReferenceBlock(
-          event.message.parent_id,
-          parentMessage?.result.metadata.senderName,
-          parentMessage?.result.metadata.senderId,
-          parentMessage?.bodyMarkdown,
-        )
-      : "";
-    const bodyMarkdown = this.composeBodyMarkdown(referenceBlock, handlerResult.text);
-
-    return {
-      bodyMarkdown,
-      result: {
-        markdown: this.composeMarkdown(sender.senderLabel, bodyMarkdown),
-        attachments: [
-          ...(parentMessage?.result.attachments ?? []),
-          ...handlerResult.attachments,
-        ],
-        metadata: this.createMetadata({
-          messageId: event.message.message_id,
-          messageType: event.message.message_type,
-          chatId: event.message.chat_id,
-          chatType: event.message.chat_type,
-          sender,
-          createTime: event.message.create_time,
-          updateTime: event.message.update_time,
-          rootId: event.message.root_id,
-          parentId: event.message.parent_id,
-          threadId: event.message.thread_id,
-          mentions,
-        }),
-        rawContent,
-        parentMessage: parentMessage?.result,
+    return this.convertMessage(
+      {
+        messageId: message.message_id,
+        messageType: message.message_type,
+        rawContent: message.content,
+        mentions: message.mentions ?? [],
+        senderId: sender.sender_id.open_id,
+        senderType: sender.sender_type,
+        chatId: message.chat_id,
+        createTime: message.create_time,
+        updateTime: message.update_time,
+        rootId: message.root_id,
+        parentId: message.parent_id,
+        threadId: message.thread_id,
       },
-    };
+      {
+        chatType: message.chat_type,
+        visitedIds: new Set([message.message_id]),
+      },
+      0,
+    );
   }
 
-  private async convertApiMessage(
-    apiMessage: FeishuApiMessage,
-    visitedIds: Set<string>,
-    depth: number,
-    chatType: "p2p" | "group",
-    threadId?: string,
-  ): Promise<InternalConvertResult> {
-    const senderId = apiMessage.sender.id;
-    const rawContent = apiMessage.body.content;
-    const mentions = this.adaptApiMentions(apiMessage.mentions);
-    const { content, parseFailed } = this.parseContent(rawContent);
-    const messageType = apiMessage.msg_type;
-    const handler = parseFailed
-      ? getHandler("__unknown__")
-      : getHandler(messageType);
+  /** 转换 im/v1 消息接口返回的单条消息 */
+  async convertApiMessage(
+    message: FeishuApiMessage,
+    options: ConvertApiMessageOptions = {},
+  ): Promise<ConvertResult> {
+    return this.convertMessage(
+      this.normalizeApiMessage(message),
+      {
+        chatType: options.chatType ?? "group",
+        visitedIds: new Set([message.message_id]),
+      },
+      0,
+    );
+  }
 
-    const [sender, parentMessage, handlerResult] = await Promise.all([
-      this.resolveSenderInfo(senderId, apiMessage.sender.sender_type),
-      apiMessage.parent_id
-        ? this.resolveParentMessage(
-            apiMessage.parent_id,
-            visitedIds,
-            depth,
+  /** 拉取群聊历史消息并转换，结果按时间升序排列 */
+  async fetchChatHistory(
+    chatId: string,
+    options: FetchChatHistoryOptions = {},
+  ): Promise<ChatHistoryResult> {
+    const pageSize = options.pageSize ?? DEFAULT_HISTORY_PAGE_SIZE;
+
+    if (!Number.isInteger(pageSize) || pageSize <= 0) {
+      throw new Error("fetchChatHistory pageSize must be a positive integer");
+    }
+
+    const chatType = options.chatType ?? "group";
+
+    // 群里多半有本机器人的回复，提前并行拿机器人名字（成功后常驻缓存，只请求一次）
+    this.apiClient.getBotName().catch(() => undefined);
+
+    const [page, memberNames] = await Promise.all([
+      this.apiClient.listChatMessages(chatId, {
+        pageSize: Math.min(pageSize, MAX_HISTORY_PAGE_SIZE),
+        pageToken: options.pageToken,
+        startTime: options.startTime,
+        endTime: options.endTime,
+      }),
+      chatType === "group"
+        ? this.apiClient
+            .getChatMemberNames(chatId)
+            .catch(() => new Map<string, string>())
+        : Promise.resolve(new Map<string, string>()),
+    ]);
+    const pageMessages = new Map(
+      page.items.map((item) => [item.message_id, item]),
+    );
+    const ascendingItems = [...page.items].sort(
+      (left, right) => Number(left.create_time) - Number(right.create_time),
+    );
+    const messages = await Promise.all(
+      ascendingItems.map((item) =>
+        this.convertMessage(
+          this.normalizeApiMessage(item),
+          {
             chatType,
-            threadId,
-          )
-        : Promise.resolve(null),
-      handler(
-        content,
-        this.createHandlerContext(
-          mentions,
-          apiMessage.message_id,
-          messageType,
-          depth,
+            visitedIds: new Set([item.message_id]),
+            memberNames,
+            pageMessages,
+          },
+          0,
         ),
       ),
+    );
+
+    return {
+      messages,
+      nextPageToken: page.hasMore ? page.pageToken : undefined,
+      hasMore: page.hasMore,
+    };
+  }
+
+  private async convertMessage(
+    message: NormalizedMessage,
+    scope: ConvertScope,
+    depth: number,
+  ): Promise<ConvertResult> {
+    const [sender, parentMessage, handlerResult] = await Promise.all([
+      this.resolveSenderInfo(message.senderId, message.senderType, scope),
+      message.parentId && !message.deleted
+        ? this.resolveParentMessage(message.parentId, scope, depth, message.threadId)
+        : Promise.resolve(null),
+      message.deleted
+        ? Promise.resolve<HandlerResult>({
+            text: RECALLED_MESSAGE_TEXT,
+            attachments: [],
+          })
+        : this.runHandler(message, scope, depth),
     ]);
 
-    const referenceBlock = apiMessage.parent_id
+    const referenceBlock = message.parentId && !message.deleted
       ? this.renderReferenceBlock(
-          apiMessage.parent_id,
-          parentMessage?.result.metadata.senderName,
-          parentMessage?.result.metadata.senderId,
+          message.parentId,
+          parentMessage?.metadata.senderName,
+          parentMessage?.metadata.senderId,
           parentMessage?.bodyMarkdown,
         )
       : "";
     const bodyMarkdown = this.composeBodyMarkdown(referenceBlock, handlerResult.text);
 
     return {
+      markdown: this.composeMarkdown(sender.senderLabel, bodyMarkdown),
       bodyMarkdown,
-      result: {
-        markdown: this.composeMarkdown(sender.senderLabel, bodyMarkdown),
-        attachments: [
-          ...(parentMessage?.result.attachments ?? []),
-          ...handlerResult.attachments,
-        ],
-        metadata: this.createMetadata({
-          messageId: apiMessage.message_id,
-          messageType,
-          chatId: apiMessage.chat_id,
-          chatType,
-          sender,
-          createTime: apiMessage.create_time,
-          updateTime: apiMessage.update_time,
-          rootId: apiMessage.root_id,
-          parentId: apiMessage.parent_id,
-          threadId,
-          mentions,
-        }),
-        rawContent,
-        parentMessage: parentMessage?.result,
-      },
+      attachments: [
+        ...(parentMessage?.attachments ?? []),
+        ...handlerResult.attachments,
+      ],
+      metadata: this.createMetadata({
+        messageId: message.messageId,
+        messageType: message.messageType,
+        chatId: message.chatId,
+        chatType: scope.chatType,
+        sender,
+        createTime: message.createTime,
+        updateTime: message.updateTime,
+        rootId: message.rootId,
+        parentId: message.parentId,
+        threadId: message.threadId,
+        mentions: message.mentions,
+      }),
+      rawContent: message.rawContent,
+      parentMessage: parentMessage ?? undefined,
     };
   }
 
-  private async convertMessageBody(
-    apiMessage: FeishuApiMessage,
+  private runHandler(
+    message: Pick<NormalizedMessage, "messageId" | "messageType" | "rawContent" | "mentions">,
+    scope: ConvertScope,
     depth: number,
   ): Promise<HandlerResult> {
-    const mentions = this.adaptApiMentions(apiMessage.mentions);
-    const { content, parseFailed } = this.parseContent(apiMessage.body.content);
-    const messageType = apiMessage.msg_type;
+    const { content, parseFailed } = this.parseContent(message.rawContent);
     const handler = parseFailed
       ? getHandler("__unknown__")
-      : getHandler(messageType);
+      : getHandler(message.messageType);
 
     return handler(
       content,
       this.createHandlerContext(
-        mentions,
-        apiMessage.message_id,
-        messageType,
+        message.mentions,
+        message.messageId,
+        message.messageType,
+        scope,
         depth,
       ),
     );
+  }
+
+  private async convertMessageBody(
+    apiMessage: FeishuApiMessage,
+    scope: ConvertScope,
+    depth: number,
+  ): Promise<HandlerResult> {
+    if (apiMessage.deleted) {
+      return { text: RECALLED_MESSAGE_TEXT, attachments: [] };
+    }
+
+    return this.runHandler(this.normalizeApiMessage(apiMessage), scope, depth);
   }
 
   private createHandlerContext(
     mentions: Mention[],
     messageId: string,
     messageType: string,
+    scope: ConvertScope,
     depth: number,
   ): HandlerContext {
     return {
@@ -249,34 +301,43 @@ export class FeishuMessageConverter {
       messageType,
       downloadDir: this.downloadDir,
       maxFileSize: this.maxFileSize,
+      downloadResources: this.downloadResources,
+      resolveSenderLabel: async (apiMessage) =>
+        (
+          await this.resolveSenderInfo(
+            apiMessage.sender.id,
+            apiMessage.sender.sender_type,
+            scope,
+          )
+        ).senderLabel,
       convertMessageBody: (apiMessage, nextDepth) =>
-        this.convertMessageBody(apiMessage, nextDepth),
+        this.convertMessageBody(apiMessage, scope, nextDepth),
       depth,
     };
   }
 
   private async resolveParentMessage(
     parentId: string,
-    visitedIds: Set<string>,
+    scope: ConvertScope,
     depth: number,
-    chatType: "p2p" | "group",
     threadId?: string,
-  ): Promise<InternalConvertResult | null> {
-    if (depth >= MAX_PARENT_DEPTH || visitedIds.has(parentId)) {
+  ): Promise<ConvertResult | null> {
+    if (depth >= this.maxParentDepth || scope.visitedIds.has(parentId)) {
       return null;
     }
 
-    visitedIds.add(parentId);
+    scope.visitedIds.add(parentId);
 
     try {
-      const parentMessage = await this.apiClient.getMessage(parentId);
+      const parentMessage =
+        scope.pageMessages?.get(parentId) ??
+        (await this.apiClient.getMessage(parentId));
+      const normalized = this.normalizeApiMessage(parentMessage);
 
-      return await this.convertApiMessage(
-        parentMessage,
-        visitedIds,
+      return await this.convertMessage(
+        { ...normalized, threadId: normalized.threadId ?? threadId },
+        scope,
         depth + 1,
-        chatType,
-        threadId,
       );
     } catch {
       return null;
@@ -284,35 +345,81 @@ export class FeishuMessageConverter {
   }
 
   private async resolveSenderInfo(
-    openId: string,
+    senderId: string,
     senderType: string,
+    scope: ConvertScope,
   ): Promise<SenderInfo> {
-    if (senderType !== "user") {
+    // 消息接口返回的 system 消息（如「某人邀请了某人入群」）没有发送人
+    if (senderId.length === 0) {
       return {
-        senderId: openId,
-        senderName: "应用",
-        senderLabel: `应用(${openId})`,
+        senderId,
+        senderName: "系统",
+        senderLabel: "系统",
+        senderType,
+      };
+    }
+
+    if (senderType !== "user") {
+      const botName =
+        senderType === "app" && senderId === this.appId
+          ? await this.apiClient.getBotName().catch(() => null)
+          : null;
+      const senderName = botName ?? "应用";
+
+      return {
+        senderId,
+        senderName,
+        senderLabel: `${senderName}(${senderId})`,
+        senderType,
+      };
+    }
+
+    const memberName = scope.memberNames?.get(senderId);
+
+    if (memberName) {
+      return {
+        senderId,
+        senderName: memberName,
+        senderLabel: `${memberName}(${senderId})`,
         senderType,
       };
     }
 
     try {
-      const { name } = await this.apiClient.getUserInfo(openId);
+      const { name } = await this.apiClient.getUserInfo(senderId);
 
       return {
-        senderId: openId,
+        senderId,
         senderName: name,
-        senderLabel: `${name}(${openId})`,
+        senderLabel: `${name}(${senderId})`,
         senderType,
       };
     } catch {
       return {
-        senderId: openId,
+        senderId,
         senderName: "未知用户",
-        senderLabel: `未知用户(${openId})`,
+        senderLabel: `未知用户(${senderId})`,
         senderType,
       };
     }
+  }
+
+  private normalizeApiMessage(apiMessage: FeishuApiMessage): NormalizedMessage {
+    return {
+      messageId: apiMessage.message_id,
+      messageType: apiMessage.msg_type,
+      rawContent: apiMessage.body?.content ?? "",
+      mentions: this.adaptApiMentions(apiMessage.mentions),
+      senderId: apiMessage.sender.id,
+      senderType: apiMessage.sender.sender_type,
+      chatId: apiMessage.chat_id,
+      createTime: apiMessage.create_time,
+      updateTime: apiMessage.update_time,
+      rootId: apiMessage.root_id,
+      parentId: apiMessage.parent_id,
+      threadId: apiMessage.thread_id,
+      deleted: apiMessage.deleted === true,
+    };
   }
 
   private parseContent(rawContent: string): {
@@ -340,6 +447,7 @@ export class FeishuMessageConverter {
       id: {
         union_id: "",
         user_id: "",
+        // API 消息的 id 是字符串：用户为 open_id，机器人为 app_id
         open_id: mention.id,
       },
       name: mention.name,
@@ -379,7 +487,7 @@ export class FeishuMessageConverter {
     messageId: string;
     messageType: string;
     chatId: string;
-    chatType: "p2p" | "group";
+    chatType: ChatType;
     sender: SenderInfo;
     createTime: string;
     updateTime: string;

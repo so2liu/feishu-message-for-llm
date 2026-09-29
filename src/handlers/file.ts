@@ -61,6 +61,14 @@ export async function handleFile(
 ): Promise<HandlerResult> {
   const { file_key, file_name } = parseFileContent(content);
   const resolvedFileName = file_name || file_key || "unnamed";
+
+  if (context.downloadResources === false) {
+    return {
+      text: `[文件: ${resolvedFileName}]`,
+      attachments: [],
+    };
+  }
+
   const messageDir = join(context.downloadDir, sanitizeFileName(context.messageId));
   const filePath = join(messageDir, sanitizeFileName(resolvedFileName));
   const resourceKey = file_key ?? resolvedFileName;
