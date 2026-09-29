@@ -35,6 +35,13 @@ export async function handleImage(
     };
   }
 
+  if (context.downloadResources === false) {
+    return {
+      text: "[图片]",
+      attachments: [],
+    };
+  }
+
   const messageDir = join(context.downloadDir, sanitizeFileName(context.messageId));
   const filePath = join(messageDir, `${sanitizeFileName(image_key)}.png`);
 

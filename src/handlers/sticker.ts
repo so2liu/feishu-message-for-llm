@@ -25,6 +25,13 @@ export async function handleSticker(
   content: unknown,
   context: HandlerContext,
 ): Promise<HandlerResult> {
+  if (context.downloadResources === false) {
+    return {
+      text: "[贴纸]",
+      attachments: [],
+    };
+  }
+
   const { file_key } = parseStickerContent(content);
   const resolvedFileKey = file_key ?? "sticker";
   const messageDir = join(context.downloadDir, sanitizeFileName(context.messageId));

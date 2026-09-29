@@ -56,7 +56,9 @@ export async function handleMergeForward(
     const convertedChildren = await Promise.all(
       messages.map(async (message) => {
         const [senderLabel, result] = await Promise.all([
-          resolveSenderLabel(message, context),
+          context.resolveSenderLabel
+            ? context.resolveSenderLabel(message)
+            : resolveSenderLabel(message, context),
           context.convertMessageBody(message, context.depth + 1),
         ]);
 
