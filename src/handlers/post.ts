@@ -1,6 +1,8 @@
 import { mkdirSync } from "node:fs";
 import { join } from "node:path";
 
+import { downloadLocalResource } from "../utils/resource.js";
+
 import type {
   Attachment,
   HandlerContext,
@@ -191,7 +193,7 @@ async function renderTag(
 
       mkdirSync(messageDir, { recursive: true });
       try {
-        await context.apiClient.downloadResource(
+        await downloadLocalResource(context,
           context.messageId,
           tag.image_key,
           "image",
@@ -230,7 +232,7 @@ async function renderTag(
           `${sanitizeFileName(tag.image_key)}.png`,
         );
         try {
-          await context.apiClient.downloadResource(
+          await downloadLocalResource(context,
             context.messageId,
             tag.image_key,
             "image",
@@ -249,7 +251,7 @@ async function renderTag(
 
       const filePath = join(messageDir, `${sanitizeFileName(tag.file_key)}.mp4`);
       try {
-        await context.apiClient.downloadResource(
+        await downloadLocalResource(context,
           context.messageId,
           tag.file_key,
           "video",

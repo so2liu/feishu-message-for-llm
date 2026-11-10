@@ -40,7 +40,7 @@ afterEach(() => {
 describe("handleMedia", () => {
   it("downloads video and cover image", async () => {
     const context = createContext();
-    vi.mocked(context.apiClient.downloadResource).mockImplementation(
+    vi.mocked(context.apiClient.downloadResource!).mockImplementation(
       async (_messageId, _fileKey, _type, savePath) => {
         expect(existsSync(dirname(savePath))).toBe(true);
       },
@@ -91,7 +91,7 @@ describe("handleMedia", () => {
 
   it("returns fallback text and keeps successful attachments when downloads fail", async () => {
     const context = createContext();
-    vi.mocked(context.apiClient.downloadResource).mockImplementation(
+    vi.mocked(context.apiClient.downloadResource!).mockImplementation(
       async (_messageId, fileKey) => {
         if (fileKey === "file_abc") {
           throw new Error("video boom");

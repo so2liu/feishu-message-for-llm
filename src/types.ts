@@ -1,12 +1,40 @@
-export interface ConverterConfig {
+interface ConverterOptions {
   appId: string;
-  appSecret: string;
   downloadDir?: string;
   maxFileSize?: number;
   /** 是否下载图片、文件等资源，默认 true。为 false 时只输出占位文本，不发请求、不写盘 */
   downloadResources?: boolean;
   /** 回复引用最多向上展开几层，默认 5。0 表示不展开，只输出引用行 */
   maxParentDepth?: number;
+}
+
+export type ConverterConfig = ConverterOptions & (
+  | { provider: FeishuDataProvider; appSecret?: never }
+  | { provider?: never; appSecret: string }
+);
+
+export interface ListChatMessagesParams {
+  pageSize: number;
+  pageToken?: string;
+  startTime?: number;
+  endTime?: number;
+}
+
+export interface ChatMessagePage {
+  items: FeishuApiMessage[];
+  pageToken?: string;
+  hasMore: boolean;
+}
+
+export interface FeishuDataProvider {
+  getUserInfo(openId: string): Promise<{ name: string }>;
+  getChatInfo(chatId: string): Promise<{ name: string }>;
+  getMessage(messageId: string): Promise<FeishuApiMessage>;
+  getMergeForwardMessages(messageId: string): Promise<FeishuApiMessage[]>;
+  getDocMeta(docToken: string, docType: string): Promise<{ title: string }>;
+  getChatMemberNames(chatId: string): Promise<Map<string, string>>;
+  getBotName(): Promise<string>;
+  listChatMessages(chatId: string, params: ListChatMessagesParams): Promise<ChatMessagePage>;
 }
 
 export interface Mention {
@@ -156,7 +184,9 @@ export interface FeishuApiClient {
 }
 
 export interface HandlerContext {
-  apiClient: FeishuApiClient;
+  apiClient: Pick<FeishuApiClient,
+    "getUserInfo" | "getChatInfo" | "getMessage" | "getMergeForwardMessages" | "getDocMeta"
+  > & Partial<Pick<FeishuApiClient, "downloadResource">>;
   mentions: Mention[];
   messageId: string;
   messageType: string;

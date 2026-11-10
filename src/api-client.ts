@@ -9,6 +9,9 @@ import type {
   Attachment,
   FeishuApiClient,
   FeishuApiMessage,
+  FeishuDataProvider,
+  ListChatMessagesParams,
+  ChatMessagePage,
 } from "./types.js";
 import { BoundedMap } from "./utils/bounded-map.js";
 
@@ -20,18 +23,7 @@ const CHAT_MEMBERS_CACHE_MAX_SIZE = 200;
 const CHAT_MEMBERS_CACHE_TTL_MS = 5 * 60_000;
 const CHAT_MEMBERS_PAGE_SIZE = 100;
 
-export interface ListChatMessagesParams {
-  pageSize: number;
-  pageToken?: string;
-  startTime?: number;
-  endTime?: number;
-}
-
-export interface ChatMessagePage {
-  items: FeishuApiMessage[];
-  pageToken?: string;
-  hasMore: boolean;
-}
+export type { ListChatMessagesParams, ChatMessagePage } from "./types.js";
 
 type FeishuApiEnvelope<T> = {
   code: number;
@@ -52,7 +44,7 @@ type RequestOptions = RequestInit & {
   skipAuth?: boolean;
 };
 
-export class FeishuApiClientImpl implements FeishuApiClient {
+export class FeishuApiClientImpl implements FeishuApiClient, FeishuDataProvider {
   private tenantAccessToken: string | null = null;
   private tokenExpiresAt = 0;
   private tokenRefreshPromise: Promise<string> | null = null;

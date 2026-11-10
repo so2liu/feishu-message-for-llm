@@ -231,7 +231,7 @@ describe("handlePost", () => {
 
   it("returns fallback text when embedded image download fails", async () => {
     const context = createContext();
-    vi.mocked(context.apiClient.downloadResource).mockRejectedValue(
+    vi.mocked(context.apiClient.downloadResource!).mockRejectedValue(
       new Error("boom"),
     );
 
@@ -253,7 +253,7 @@ describe("handlePost", () => {
       messageId: "msg/123",
       downloadDir: tmpdir(),
     });
-    vi.mocked(context.apiClient.downloadResource).mockImplementation(
+    vi.mocked(context.apiClient.downloadResource!).mockImplementation(
       async (_messageId, fileKey) => {
         if (fileKey === "../../video") {
           throw new Error("boom");

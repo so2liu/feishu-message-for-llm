@@ -1,4 +1,4 @@
-import type { FeishuApiClient } from "../types.js";
+import type { FeishuDataProvider } from "../types.js";
 
 const FEISHU_DOC_TYPES = new Set([
   "docs",
@@ -43,7 +43,7 @@ export function parseDocUrl(
 
 export async function enrichTextWithDocLinks(
   text: string,
-  apiClient: FeishuApiClient,
+  apiClient: Pick<FeishuDataProvider, "getDocMeta">,
 ): Promise<string> {
   const matches = Array.from(text.matchAll(FEISHU_DOC_PATTERN));
 

@@ -40,7 +40,7 @@ afterEach(() => {
 describe("handleAudio", () => {
   it("downloads audio files and formats duration in seconds", async () => {
     const context = createContext();
-    vi.mocked(context.apiClient.downloadResource).mockImplementation(
+    vi.mocked(context.apiClient.downloadResource!).mockImplementation(
       async (_messageId, _fileKey, _type, savePath) => {
         expect(existsSync(dirname(savePath))).toBe(true);
       },
@@ -74,7 +74,7 @@ describe("handleAudio", () => {
 
   it("returns fallback text when audio download fails", async () => {
     const context = createContext();
-    vi.mocked(context.apiClient.downloadResource).mockRejectedValue(
+    vi.mocked(context.apiClient.downloadResource!).mockRejectedValue(
       new Error("boom"),
     );
 

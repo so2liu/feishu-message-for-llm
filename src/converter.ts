@@ -9,6 +9,7 @@ import type {
   ConvertResult,
   ConverterConfig,
   FeishuApiMessage,
+  FeishuDataProvider,
   FeishuMessageEvent,
   FetchChatHistoryOptions,
   HandlerContext,
@@ -57,7 +58,7 @@ interface ConvertScope {
 }
 
 export class FeishuMessageConverter {
-  private readonly apiClient: FeishuApiClientImpl;
+  private readonly apiClient: FeishuDataProvider;
   private readonly appId: string;
   private readonly downloadDir: string;
   private readonly maxFileSize?: number;
@@ -69,7 +70,7 @@ export class FeishuMessageConverter {
       throw new Error("ConverterConfig.appId must not be empty");
     }
 
-    if (config.appSecret.trim().length === 0) {
+    if (!config.provider && !config.appSecret?.trim()) {
       throw new Error("ConverterConfig.appSecret must not be empty");
     }
 
@@ -94,7 +95,7 @@ export class FeishuMessageConverter {
       throw new Error("ConverterConfig.maxParentDepth must be a non-negative integer");
     }
 
-    this.apiClient = new FeishuApiClientImpl(config.appId, config.appSecret);
+    this.apiClient = config.provider ?? new FeishuApiClientImpl(config.appId, config.appSecret!);
     this.appId = config.appId;
     this.downloadDir = config.downloadDir ?? tmpdir();
     this.maxFileSize = config.maxFileSize;

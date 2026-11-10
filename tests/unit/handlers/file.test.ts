@@ -42,7 +42,7 @@ describe("handleFile", () => {
     const downloadDir = await mkdtemp(join(tmpdir(), "file-handler-"));
     const context = createContext(downloadDir);
 
-    vi.mocked(context.apiClient.downloadResource).mockImplementation(
+    vi.mocked(context.apiClient.downloadResource!).mockImplementation(
       async (_messageId, _fileKey, _type, savePath) => {
         expect(existsSync(dirname(savePath))).toBe(true);
         await writeFile(savePath, "binary");
@@ -77,7 +77,7 @@ describe("handleFile", () => {
     const downloadDir = await mkdtemp(join(tmpdir(), "file-handler-"));
     const context = createContext(downloadDir);
 
-    vi.mocked(context.apiClient.downloadResource).mockImplementation(
+    vi.mocked(context.apiClient.downloadResource!).mockImplementation(
       async (_messageId, _fileKey, _type, savePath) => {
         expect(existsSync(dirname(savePath))).toBe(true);
         await writeFile(
@@ -122,7 +122,7 @@ describe("handleFile", () => {
     const downloadDir = await mkdtemp(join(tmpdir(), "file-handler-"));
     const context = createContext(downloadDir);
 
-    vi.mocked(context.apiClient.downloadResource).mockRejectedValue(
+    vi.mocked(context.apiClient.downloadResource!).mockRejectedValue(
       new Error("boom"),
     );
 
@@ -153,7 +153,7 @@ describe("handleFile", () => {
     const context = createContext(downloadDir);
     const longContent = "a".repeat(70 * 1024);
 
-    vi.mocked(context.apiClient.downloadResource).mockImplementation(
+    vi.mocked(context.apiClient.downloadResource!).mockImplementation(
       async (_messageId, _fileKey, _type, savePath) => {
         await writeFile(savePath, longContent);
       },

@@ -42,6 +42,50 @@ console.log(result.metadata);       // 完整元信息
 console.log(result.parentMessage);  // 被回复消息的完整转换结果（如有）
 ```
 
+## 宿主数据注入（无需 App Secret）
+
+PA 等宿主可绑定一条 SW 连接后实现 `FeishuDataProvider`，由 SW 管理密钥、token 和飞书 API。转换器不获取 token，不在注入查询失败时回退到飞书。请为不同连接分别创建 provider 和 converter，provider 不应在请求期间切换其绑定的连接。
+
+```typescript
+import { FeishuMessageConverter, type FeishuDataProvider } from 'feishu-message-for-llm';
+
+declare const provider: FeishuDataProvider; // 宿主实现，固定绑定一个连接
+const converter = new FeishuMessageConverter({
+  appId: 'cli_xxx', // 用于识别本机器人发送者
+  provider,
+  downloadResources: false,
+});
+const result = await converter.convert(event);
+```
+
+包根导出 `FeishuDataProvider`、`ListChatMessagesParams`、`ChatMessagePage`：
+
+```typescript
+interface FeishuDataProvider {
+  getUserInfo(openId: string): Promise<{ name: string }>;
+  getChatInfo(chatId: string): Promise<{ name: string }>;
+  getMessage(messageId: string): Promise<FeishuApiMessage>;
+  getMergeForwardMessages(messageId: string): Promise<FeishuApiMessage[]>;
+  getDocMeta(docToken: string, docType: string): Promise<{ title: string }>;
+  getChatMemberNames(chatId: string): Promise<Map<string, string>>;
+  getBotName(): Promise<string>;
+  listChatMessages(chatId: string, params: ListChatMessagesParams): Promise<ChatMessagePage>;
+}
+interface ListChatMessagesParams {
+  pageSize: number;
+  pageToken?: string;
+  startTime?: number;
+  endTime?: number;
+}
+interface ChatMessagePage {
+  items: FeishuApiMessage[];
+  pageToken?: string;
+  hasMore: boolean;
+}
+```
+
+`convert`、`convertApiMessage`、`fetchChatHistory` 共用既有 handlers，包括引用、转发、分享和文档标题。用户/群/标题查询失败沿用可识别占位或保留原链接；历史页查询失败直接拒绝。`getChatMemberNames` 失败后尝试同一 provider 的用户查询。原始正文保留在 `rawContent`；消息、群、发送者、引用及 @ 身份保留在 `metadata`，不要从 Markdown 反推路由。
+
 ## 拉取群聊历史消息
 
 适合把群里最近的聊天作为智能体的上下文：

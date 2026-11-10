@@ -1,6 +1,8 @@
 import { mkdirSync } from "node:fs";
 import { join } from "node:path";
 
+import { downloadLocalResource } from "../utils/resource.js";
+
 import type { HandlerContext, HandlerResult } from "../types.js";
 import { parseJsonRecord } from "../utils/json.js";
 import { sanitizeFileName } from "../utils/sanitize.js";
@@ -53,7 +55,7 @@ export async function handleAudio(
   mkdirSync(messageDir, { recursive: true });
 
   try {
-    await context.apiClient.downloadResource(
+    await downloadLocalResource(context,
       context.messageId,
       resolvedFileKey,
       "audio",

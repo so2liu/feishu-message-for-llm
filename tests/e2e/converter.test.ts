@@ -276,7 +276,7 @@ function createFetchMock(state: HarnessState) {
 
 async function createHarness(
   seed?: Partial<HarnessState>,
-  config?: Partial<ConverterConfig>,
+  config?: Partial<Omit<ConverterConfig, "provider">>,
 ) {
   const downloadDir = await mkdtemp(join(tmpdir(), "feishu-converter-e2e-"));
   tempDirs.push(downloadDir);
