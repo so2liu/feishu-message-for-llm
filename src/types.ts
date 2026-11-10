@@ -6,6 +6,7 @@ interface ConverterOptions {
   downloadResources?: boolean;
   /** 回复引用最多向上展开几层，默认 5。0 表示不展开，只输出引用行 */
   maxParentDepth?: number;
+  resourceResolver?: ResourceResolver;
 }
 
 export type ConverterConfig = ConverterOptions & (
@@ -106,9 +107,39 @@ export interface FeishuApiMessage {
 
 export interface Attachment {
   type: "image" | "file" | "audio" | "video" | "sticker";
-  filePath: string;
+  filePath?: string;
+  resourceRef?: string;
+  messageId?: string;
+  fileKey?: string;
+  size?: number;
   mimeType?: string;
   fileName?: string;
+}
+
+export interface ResourceRequest {
+  messageId: string;
+  fileKey: string;
+  type: Attachment["type"];
+  fileName?: string;
+  mimeType?: string;
+  maxSize?: number;
+}
+
+export interface ResolvedResource {
+  resourceRef: string;
+  fileName?: string;
+  mimeType?: string;
+  size?: number;
+  textPreview?: { content: string; truncated?: boolean };
+}
+
+export type ResourceResolver = (request: ResourceRequest) => Promise<ResolvedResource>;
+
+export interface ResourceError {
+  messageId: string;
+  fileKey: string;
+  type: Attachment["type"];
+  code: "unavailable" | "too_large" | "resolve_failed";
 }
 
 export interface MessageMetadata {
@@ -138,6 +169,7 @@ export interface ConvertResult {
   metadata: MessageMetadata;
   rawContent: string;
   parentMessage?: ConvertResult;
+  resourceErrors?: ResourceError[];
 }
 
 export type ChatType = "p2p" | "group";
@@ -194,6 +226,7 @@ export interface HandlerContext {
   maxFileSize?: number;
   /** 未设置时视为 true */
   downloadResources?: boolean;
+  resourceResolver?: ResourceResolver;
   /** 解析合并转发子消息的发送人，返回「名字(id)」 */
   resolveSenderLabel?: (message: FeishuApiMessage) => Promise<string>;
   convertMessageBody: (
@@ -206,6 +239,7 @@ export interface HandlerContext {
 export interface HandlerResult {
   text: string;
   attachments: Attachment[];
+  resourceErrors?: ResourceError[];
 }
 
 export type MessageHandler = (

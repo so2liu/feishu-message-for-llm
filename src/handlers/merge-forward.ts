@@ -65,6 +65,7 @@ export async function handleMergeForward(
         return {
           text: formatQuotedChildMessage(senderLabel, result.text),
           attachments: result.attachments,
+          resourceErrors: result.resourceErrors ?? [],
         };
       }),
     );
@@ -72,10 +73,12 @@ export async function handleMergeForward(
     const attachments: Attachment[] = convertedChildren.flatMap(
       (child) => child.attachments,
     );
+    const resourceErrors = convertedChildren.flatMap((child) => child.resourceErrors);
 
     return {
       text: ["> **合并转发消息：**", ...renderedChildren].join("\n"),
       attachments,
+      ...(resourceErrors.length ? { resourceErrors } : {}),
     };
   } catch {
     return {

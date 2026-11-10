@@ -86,6 +86,79 @@ interface ChatMessagePage {
 
 `convert`、`convertApiMessage`、`fetchChatHistory` 共用既有 handlers，包括引用、转发、分享和文档标题。用户/群/标题查询失败沿用可识别占位或保留原链接；历史页查询失败直接拒绝。`getChatMemberNames` 失败后尝试同一 provider 的用户查询。原始正文保留在 `rawContent`；消息、群、发送者、引用及 @ 身份保留在 `metadata`，不要从 Markdown 反推路由。
 
+## 宿主持久资源
+
+```typescript
+import type { ResourceResolver } from 'feishu-message-for-llm';
+
+const resourceResolver: ResourceResolver = async (request) => {
+  // 用固定连接向 SW 下载并持久化。失败时 reject，不返回空引用。
+  const stored = await host.persistFeishuResource(request);
+  return {
+    resourceRef: stored.reference,
+    fileName: stored.fileName,
+    mimeType: stored.mimeType,
+    size: stored.size,
+    // 文本预览可省略；仅在宿主已经取得内容时提供，不传临时文件路径。
+    textPreview: stored.textPreview,
+  };
+};
+const converter = new FeishuMessageConverter({ appId: 'cli_xxx', provider, resourceResolver });
+const result = await converter.convert(event);
+for (const attachment of result.attachments) {
+  // 宿主模式有 resourceRef/messageId/fileKey；不要求 filePath。
+  await host.publishResource(attachment.resourceRef, attachment);
+}
+for (const failure of result.resourceErrors ?? []) {
+  console.error(failure.messageId, failure.fileKey, failure.type, failure.code);
+}
+```
+
+上例的 `host.persistFeishuResource` / `host.publishResource` 是宿主自行实现的示意函数，本库不提供 SW 客户端或文件存储。
+
+包根公开导出以下契约：
+
+```typescript
+interface ResourceRequest {
+  messageId: string;
+  fileKey: string;
+  type: 'image' | 'file' | 'audio' | 'video' | 'sticker';
+  fileName?: string;
+  mimeType?: string;
+  maxSize?: number;
+}
+interface ResolvedResource {
+  resourceRef: string;
+  fileName?: string;
+  mimeType?: string;
+  size?: number;
+  textPreview?: { content: string; truncated?: boolean };
+}
+type ResourceResolver = (request: ResourceRequest) => Promise<ResolvedResource>;
+interface ResourceError {
+  messageId: string;
+  fileKey: string;
+  type: Attachment['type'];
+  code: 'unavailable' | 'too_large' | 'resolve_failed';
+}
+```
+
+同一 resolver 处理当前消息、富文本、回复和合并转发中的资源，Markdown 使用宿主引用。宿主模式不创建本地目录，不读取本地文件或平台 token。注入 provider 但未提供 resolver 时，资源返回原有失败占位及 `unavailable`，不会使用 provider 上额外的下载/token 方法。resolver 拒绝、空引用或无效大小返回 `resolve_failed`；已返回的 `size` 超出 `maxFileSize` 返回 `too_large`。失败不丢失同一消息里的其他成功附件，`resourceErrors` 带来源身份并向顶层聚合；不复制异常正文，避免把服务错误里的凭据写入输出。
+
+宿主须在实际下载/持久化时执行 `maxSize` 限制，库只对返回的大小再次检查。文本预览最多展示 64 KiB，超过时标注截断；未提供 `textPreview` 就只展示文件链接。保留原有回复深度和转发深度限制。`downloadResources: false` 在所有嵌套层级跳过 resolver、资源下载和文件 IO；消息、名字、引用、文档标题等数据查询仍按转换需要执行。
+
+原凭据模式仍使用本地下载，附件运行时保持原来的 `filePath` 结构。为容纳宿主引用，公开 `Attachment.filePath` 类型改为可选；读取路径的 TypeScript 消费者应先检查 `filePath`，宿主消费者使用 `resourceRef`。不提供历史数据迁移或两类资源之间的自动转换。
+
+## 从未发布提交安装
+
+包有 `prepare: npm run build`，git 安装会生成 ESM、CJS 和类型声明；tarball 的 `files` 仍仅包含 `dist`。PA 可固定已推送的完整提交 SHA：
+
+```bash
+pnpm add 'feishu-message-for-llm@github:so2liu/feishu-message-for-llm#<完整 SHA>'
+```
+
+pnpm 10.26+ 的 git prepare 需要消费者显式允许该 git 依赖构建，不能使用 `--ignore-scripts`。构建信任配置由宿主维护；本库不修改宿主 package/lock。不需要发布 npm 版本。离线交付可在联网构建环境执行 `pnpm build`、`pnpm pack`，把带 `dist` 的 tarball 交给消费者。
+
 ## 拉取群聊历史消息
 
 适合把群里最近的聊天作为智能体的上下文：
@@ -201,14 +274,14 @@ const result = await converter.convertApiMessage(item as FeishuApiMessage, { cha
 ## 配置选项
 
 ```typescript
-interface ConverterConfig {
+type ConverterConfig = {
   appId: string;        // 飞书应用 App ID
-  appSecret: string;    // 飞书应用 App Secret
   downloadDir?: string; // 文件下载目录，默认 os.tmpdir()
   maxFileSize?: number; // 单文件最大下载字节数，超限中断下载
   downloadResources?: boolean; // 是否下载图片、文件等资源，默认 true
   maxParentDepth?: number;     // 回复引用最多展开几层，默认 5；0 表示不展开
-}
+  resourceResolver?: ResourceResolver;
+} & ({ appSecret: string; provider?: never } | { provider: FeishuDataProvider; appSecret?: never });
 ```
 
 `downloadResources: false` 时不发下载请求、不创建目录、不写文件，`attachments` 为空，资源类消息输出占位文本：
@@ -235,10 +308,11 @@ interface ConverterConfig {
 interface ConvertResult {
   markdown: string;             // LLM 可直接使用的 Markdown
   bodyMarkdown: string;         // 不带「**发送人(id)：**」抬头的正文
-  attachments: Attachment[];    // 下载到本地的文件列表
+  attachments: Attachment[];    // 本地文件或宿主持久资源引用
   metadata: MessageMetadata;    // 完整元信息（messageId, senderId, chatId 等）
   rawContent: string;           // 原始 content JSON 字符串
   parentMessage?: ConvertResult; // 被回复消息的完整转换结果
+  resourceErrors?: ResourceError[]; // 宿主资源失败，有失败时才出现
 }
 ```
 

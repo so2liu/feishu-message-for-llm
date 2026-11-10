@@ -1,11 +1,8 @@
-import { mkdirSync } from "node:fs";
-import { join } from "node:path";
 
-import { downloadLocalResource } from "../utils/resource.js";
+import { resolveResource, resourceLink, resourceFailure } from "../utils/resource.js";
 
 import type { HandlerContext, HandlerResult } from "../types.js";
 import { parseJsonRecord } from "../utils/json.js";
-import { sanitizeFileName } from "../utils/sanitize.js";
 
 interface MediaContent {
   file_key?: string;
@@ -53,57 +50,29 @@ export async function handleMedia(
     };
   }
 
-  const messageDir = join(context.downloadDir, sanitizeFileName(context.messageId));
-  const filePath = join(messageDir, sanitizeFileName(resolvedFileName));
-
-  mkdirSync(messageDir, { recursive: true });
-
   const attachments: HandlerResult["attachments"] = [];
+  const resourceErrors: NonNullable<HandlerResult["resourceErrors"]> = [];
   const textParts: string[] = [];
-
   try {
-    await downloadLocalResource(context,
-      context.messageId,
-      resolvedFileKey,
-      "video",
-      filePath,
-      context.maxFileSize,
-    );
-    attachments.push({
-      type: "video",
-      filePath,
-      fileName: resolvedFileName,
-    });
-    textParts.push(
-      `[视频: ${resolvedFileName}, 时长: ${formatSeconds(duration)}秒](${filePath})`,
-    );
-  } catch {
+    const { attachment } = await resolveResource(context, {
+      fileKey: resolvedFileKey, type: "video", fileName: resolvedFileName,
+    }, resolvedFileName);
+    attachments.push(attachment);
+    textParts.push(`[视频: ${resolvedFileName}, 时长: ${formatSeconds(duration)}秒](${resourceLink(attachment)})`);
+  } catch (error) {
     textParts.push(`[视频下载失败: ${resolvedFileKey}]`);
+    resourceErrors.push(...resourceFailure(error).resourceErrors ?? []);
   }
-
   if (image_key) {
-    const coverPath = join(messageDir, `${sanitizeFileName(image_key)}.png`);
-
     try {
-      await downloadLocalResource(context,
-        context.messageId,
-        image_key,
-        "image",
-        coverPath,
-        context.maxFileSize,
-      );
-      attachments.push({
-        type: "image",
-        filePath: coverPath,
-        mimeType: "image/png",
-      });
-    } catch {
+      const { attachment } = await resolveResource(context, {
+        fileKey: image_key, type: "image", mimeType: "image/png",
+      }, `${image_key}.png`);
+      attachments.push(attachment);
+    } catch (error) {
       textParts.push(`[图片下载失败: ${image_key}]`);
+      resourceErrors.push(...resourceFailure(error).resourceErrors ?? []);
     }
   }
-
-  return {
-    text: textParts.join("\n"),
-    attachments,
-  };
+  return { text: textParts.join("\n"), attachments, ...(resourceErrors.length ? { resourceErrors } : {}) };
 }

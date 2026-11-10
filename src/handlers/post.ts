@@ -1,7 +1,5 @@
-import { mkdirSync } from "node:fs";
-import { join } from "node:path";
 
-import { downloadLocalResource } from "../utils/resource.js";
+import { resolveResource, resourceLink, resourceFailure } from "../utils/resource.js";
 
 import type {
   Attachment,
@@ -11,7 +9,6 @@ import type {
 } from "../types.js";
 import { parseDocUrl } from "../utils/doc-link.js";
 import { parseJsonRecord } from "../utils/json.js";
-import { sanitizeFileName } from "../utils/sanitize.js";
 import { applyStyles } from "../utils/style.js";
 
 interface PostContent {
@@ -87,9 +84,6 @@ export function parsePostContent(content: unknown): PostContent {
   };
 }
 
-function resolveMessageDir(context: HandlerContext): string {
-  return join(context.downloadDir, sanitizeFileName(context.messageId));
-}
 
 function getMentionDisplay(tag: MentionPostTag, mentions: Mention[]): string {
   if (tag.user_id === "@_all") {
@@ -188,86 +182,44 @@ async function renderTag(
         };
       }
 
-      const messageDir = resolveMessageDir(context);
-      const filePath = join(messageDir, `${sanitizeFileName(tag.image_key)}.png`);
-
-      mkdirSync(messageDir, { recursive: true });
       try {
-        await downloadLocalResource(context,
-          context.messageId,
-          tag.image_key,
-          "image",
-          filePath,
-          context.maxFileSize,
-        );
-      } catch {
-        return {
-          text: `[图片下载失败: ${tag.image_key}]`,
-          attachments: [],
-        };
+        const { attachment } = await resolveResource(context, {
+          fileKey: tag.image_key, type: "image",
+        }, `${tag.image_key}.png`);
+        return { text: `![图片](${resourceLink(attachment)})`, attachments: [attachment] };
+      } catch (error) {
+        return { text: `[图片下载失败: ${tag.image_key}]`, attachments: [], ...resourceFailure(error) };
       }
-
-      return {
-        text: `![图片](${filePath})`,
-        attachments: [{ type: "image", filePath }],
-      };
     }
     case "media": {
-      if (plainText || context.downloadResources === false) {
-        return {
-          text: "[视频]",
-          attachments: [],
-        };
-      }
-
+      if (plainText || context.downloadResources === false) return { text: "[视频]", attachments: [] };
       const attachments: Attachment[] = [];
+      const resourceErrors: NonNullable<HandlerResult["resourceErrors"]> = [];
       const textParts: string[] = [];
-      const messageDir = resolveMessageDir(context);
-
-      mkdirSync(messageDir, { recursive: true });
-
       if (tag.image_key) {
-        const coverPath = join(
-          messageDir,
-          `${sanitizeFileName(tag.image_key)}.png`,
-        );
         try {
-          await downloadLocalResource(context,
-            context.messageId,
-            tag.image_key,
-            "image",
-            coverPath,
-            context.maxFileSize,
-          );
-          attachments.push({ type: "image", filePath: coverPath });
-        } catch {
+          const { attachment } = await resolveResource(context, {
+            fileKey: tag.image_key, type: "image",
+          }, `${tag.image_key}.png`);
+          attachments.push(attachment);
+        } catch (error) {
           textParts.push(`[图片下载失败: ${tag.image_key}]`);
+          resourceErrors.push(...resourceFailure(error).resourceErrors ?? []);
         }
       }
-
-      if (!tag.file_key) {
-        return { text: textParts.join(" "), attachments };
+      if (tag.file_key) {
+        try {
+          const { attachment } = await resolveResource(context, {
+            fileKey: tag.file_key, type: "video",
+          }, `${tag.file_key}.mp4`);
+          attachments.unshift(attachment);
+          textParts.push(`[视频](${resourceLink(attachment)})`);
+        } catch (error) {
+          textParts.push(`[视频下载失败: ${tag.file_key}]`);
+          resourceErrors.push(...resourceFailure(error).resourceErrors ?? []);
+        }
       }
-
-      const filePath = join(messageDir, `${sanitizeFileName(tag.file_key)}.mp4`);
-      try {
-        await downloadLocalResource(context,
-          context.messageId,
-          tag.file_key,
-          "video",
-          filePath,
-          context.maxFileSize,
-        );
-        attachments.unshift({ type: "video", filePath });
-        textParts.push(`[视频](${filePath})`);
-      } catch {
-        textParts.push(`[视频下载失败: ${tag.file_key}]`);
-      }
-
-      return {
-        text: textParts.join(" "),
-        attachments,
-      };
+      return { text: textParts.join(" "), attachments, ...(resourceErrors.length ? { resourceErrors } : {}) };
     }
     case "emotion":
       return {
@@ -332,6 +284,7 @@ export async function handlePost(
 ): Promise<HandlerResult> {
   const parsedContent = parsePostContent(content);
   const attachments: Attachment[] = [];
+  const resourceErrors: NonNullable<HandlerResult["resourceErrors"]> = [];
   const paragraphs: string[] = [];
 
   for (const paragraph of parsedContent.content ?? []) {
@@ -345,6 +298,7 @@ export async function handlePost(
       const rendered = await renderTag(rawTag, context);
       paragraphText += rendered.text;
       attachments.push(...rendered.attachments);
+      resourceErrors.push(...rendered.resourceErrors ?? []);
     }
 
     paragraphs.push(paragraphText);
@@ -357,5 +311,6 @@ export async function handlePost(
   return {
     text,
     attachments,
+    ...(resourceErrors.length ? { resourceErrors } : {}),
   };
 }

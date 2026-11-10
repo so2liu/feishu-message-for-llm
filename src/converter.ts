@@ -16,6 +16,7 @@ import type {
   HandlerResult,
   Mention,
   MessageMetadata,
+  ResourceResolver,
 } from "./types.js";
 
 const DEFAULT_MAX_PARENT_DEPTH = 5;
@@ -59,11 +60,13 @@ interface ConvertScope {
 
 export class FeishuMessageConverter {
   private readonly apiClient: FeishuDataProvider;
+  private readonly handlerApiClient: HandlerContext["apiClient"];
   private readonly appId: string;
   private readonly downloadDir: string;
   private readonly maxFileSize?: number;
   private readonly downloadResources: boolean;
   private readonly maxParentDepth: number;
+  private readonly resourceResolver?: ResourceResolver;
 
   constructor(config: ConverterConfig) {
     if (config.appId.trim().length === 0) {
@@ -95,12 +98,22 @@ export class FeishuMessageConverter {
       throw new Error("ConverterConfig.maxParentDepth must be a non-negative integer");
     }
 
-    this.apiClient = config.provider ?? new FeishuApiClientImpl(config.appId, config.appSecret!);
+    const builtin = config.provider ? undefined : new FeishuApiClientImpl(config.appId, config.appSecret!);
+    this.apiClient = config.provider ?? builtin!;
+    this.handlerApiClient = {
+      getUserInfo: this.apiClient.getUserInfo.bind(this.apiClient),
+      getChatInfo: this.apiClient.getChatInfo.bind(this.apiClient),
+      getMessage: this.apiClient.getMessage.bind(this.apiClient),
+      getMergeForwardMessages: this.apiClient.getMergeForwardMessages.bind(this.apiClient),
+      getDocMeta: this.apiClient.getDocMeta.bind(this.apiClient),
+      downloadResource: builtin?.downloadResource.bind(builtin),
+    };
     this.appId = config.appId;
     this.downloadDir = config.downloadDir ?? tmpdir();
     this.maxFileSize = config.maxFileSize;
     this.downloadResources = config.downloadResources ?? true;
     this.maxParentDepth = config.maxParentDepth ?? DEFAULT_MAX_PARENT_DEPTH;
+    this.resourceResolver = config.resourceResolver;
   }
 
   async convert(event: FeishuMessageEvent): Promise<ConvertResult> {
@@ -228,6 +241,10 @@ export class FeishuMessageConverter {
         )
       : "";
     const bodyMarkdown = this.composeBodyMarkdown(referenceBlock, handlerResult.text);
+    const resourceErrors = [
+      ...(parentMessage?.resourceErrors ?? []),
+      ...(handlerResult.resourceErrors ?? []),
+    ];
 
     return {
       markdown: this.composeMarkdown(sender.senderLabel, bodyMarkdown),
@@ -251,6 +268,7 @@ export class FeishuMessageConverter {
       }),
       rawContent: message.rawContent,
       parentMessage: parentMessage ?? undefined,
+      ...(resourceErrors.length ? { resourceErrors } : {}),
     };
   }
 
@@ -296,13 +314,14 @@ export class FeishuMessageConverter {
     depth: number,
   ): HandlerContext {
     return {
-      apiClient: this.apiClient,
+      apiClient: this.handlerApiClient,
       mentions,
       messageId,
       messageType,
       downloadDir: this.downloadDir,
       maxFileSize: this.maxFileSize,
       downloadResources: this.downloadResources,
+      resourceResolver: this.resourceResolver,
       resolveSenderLabel: async (apiMessage) =>
         (
           await this.resolveSenderInfo(

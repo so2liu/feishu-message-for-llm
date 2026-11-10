@@ -14,4 +14,8 @@ export type {
   FetchChatHistoryOptions,
   Mention,
   MessageMetadata,
+  ResourceRequest,
+  ResolvedResource,
+  ResourceResolver,
+  ResourceError,
 } from "./types.js";

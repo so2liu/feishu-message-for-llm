@@ -1,11 +1,8 @@
-import { mkdirSync } from "node:fs";
-import { join } from "node:path";
 
-import { downloadLocalResource } from "../utils/resource.js";
+import { resolveResource, resourceLink, resourceFailure } from "../utils/resource.js";
 
 import type { HandlerContext, HandlerResult } from "../types.js";
 import { parseJsonRecord } from "../utils/json.js";
-import { sanitizeFileName } from "../utils/sanitize.js";
 
 interface AudioContent {
   file_key?: string;
@@ -32,50 +29,16 @@ function formatSeconds(duration?: number): string {
   return Number.isInteger(seconds) ? `${seconds}` : `${seconds}`;
 }
 
-export async function handleAudio(
-  content: unknown,
-  context: HandlerContext,
-): Promise<HandlerResult> {
+export async function handleAudio(content: unknown, context: HandlerContext): Promise<HandlerResult> {
   const { file_key, duration } = parseAudioContent(content);
-
-  if (context.downloadResources === false) {
-    return {
-      text: `[语音消息, 时长: ${formatSeconds(duration)}秒]`,
-      attachments: [],
-    };
-  }
-
-  const resolvedFileKey = file_key ?? "audio";
-  const messageDir = join(context.downloadDir, sanitizeFileName(context.messageId));
-  const filePath = join(
-    messageDir,
-    `${sanitizeFileName(resolvedFileKey)}.opus`,
-  );
-
-  mkdirSync(messageDir, { recursive: true });
-
+  if (context.downloadResources === false) return { text: `[语音消息, 时长: ${formatSeconds(duration)}秒]`, attachments: [] };
+  const resolvedKey = file_key ?? "audio";
   try {
-    await downloadLocalResource(context,
-      context.messageId,
-      resolvedFileKey,
-      "audio",
-      filePath,
-      context.maxFileSize,
-    );
-  } catch {
-    return {
-      text: `[音频下载失败: ${resolvedFileKey}]`,
-      attachments: [],
-    };
+    const { attachment } = await resolveResource(context, {
+      fileKey: resolvedKey, type: "audio",
+    }, `${resolvedKey}.opus`);
+    return { text: `[语音消息, 时长: ${formatSeconds(duration)}秒](${resourceLink(attachment)})`, attachments: [attachment] };
+  } catch (error) {
+    return { text: `[音频下载失败: ${resolvedKey}]`, attachments: [], ...resourceFailure(error) };
   }
-
-  return {
-    text: `[语音消息, 时长: ${formatSeconds(duration)}秒](${filePath})`,
-    attachments: [
-      {
-        type: "audio",
-        filePath,
-      },
-    ],
-  };
 }

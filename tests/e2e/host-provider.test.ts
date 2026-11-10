@@ -4,7 +4,7 @@ import { mkdir, open } from "node:fs/promises";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { FeishuMessageConverter } from "../../src/index.js";
-import type { FeishuApiMessage, FeishuDataProvider, FeishuMessageEvent } from "../../src/index.js";
+import type { FeishuApiMessage, FeishuDataProvider, FeishuMessageEvent, ResourceResolver } from "../../src/index.js";
 
 vi.mock("node:fs", async (importOriginal) => ({
   ...await importOriginal<typeof import("node:fs")>(),
@@ -115,5 +115,99 @@ describe("host data provider", () => {
     expect(first.getMessage).toHaveBeenCalledTimes(1);
     expect(second.getMessage).toHaveBeenCalledTimes(1);
     expect(left.metadata.parentId).toBe("parent");
+  });
+});
+
+describe("host resource resolver", () => {
+  const cases: [string, unknown, string[]][] = [
+    ["image", { image_key: "image" }, ["image"]],
+    ["file", { file_key: "file", file_name: "notes.txt" }, ["file"]],
+    ["audio", { file_key: "audio" }, ["audio"]],
+    ["sticker", { file_key: "sticker" }, ["sticker"]],
+    ["media", { file_key: "video", image_key: "cover" }, ["video", "cover"]],
+    ["post", { content: [[{ tag: "img", image_key: "inline" }, { tag: "media", file_key: "clip", image_key: "cover" }]] }, ["inline", "cover", "clip"]],
+  ];
+
+  it.each(cases)("resolves %s without local paths, directories, reads or direct requests", async (type, content, keys) => {
+    const fetch = vi.fn(() => { throw new Error("Unexpected network"); });
+    vi.stubGlobal("fetch", fetch);
+    const resolver = vi.fn<ResourceResolver>(async ({ fileKey }) => ({ resourceRef: `resource:${fileKey}`, size: 10 }));
+    const converter = new FeishuMessageConverter({ appId: "app", provider: provider(), resourceResolver: resolver, maxFileSize: 100 });
+    const result = await converter.convert(event(message("input", type, content)));
+    expect(resolver.mock.calls.map(([input]) => input.fileKey)).toEqual(keys);
+    for (const [input] of resolver.mock.calls) {
+      expect(input).toMatchObject({ messageId: "input", maxSize: 100 });
+      expect(input).not.toHaveProperty("filePath");
+    }
+    expect(result.attachments).toHaveLength(keys.length);
+    for (const attachment of result.attachments) {
+      expect(attachment).toMatchObject({ messageId: "input", resourceRef: `resource:${attachment.fileKey}` });
+      expect(attachment).not.toHaveProperty("filePath");
+    }
+    expect(result.resourceErrors).toBeUndefined();
+    expect(fetch).not.toHaveBeenCalled();
+    expect(mkdirSync).not.toHaveBeenCalled();
+    expect(mkdir).not.toHaveBeenCalled();
+    expect(open).not.toHaveBeenCalled();
+  });
+
+  it.each([true, false])("propagates recursive resources and failures; downloads enabled: %s", async (enabled) => {
+    const host = provider();
+    const parent = message("parent", "file", { file_key: "notes", file_name: "notes.txt" });
+    vi.mocked(host.getMessage).mockResolvedValue(parent);
+    const children = cases.map(([type, content], index) => message(`child${index}`, type, content));
+    const nested = message("nested", "merge_forward", {});
+    vi.mocked(host.getMergeForwardMessages).mockImplementation(async (id) => id === "input" ? [nested] : children);
+    const resolver = vi.fn<ResourceResolver>(async ({ fileKey }) => {
+      if (fileKey === "clip") throw new Error("Denied");
+      return { resourceRef: `resource:${fileKey}`, textPreview: { content: "hello" } };
+    });
+    const input = message("input", "merge_forward", {});
+    input.parent_id = "parent";
+    const converter = new FeishuMessageConverter({ appId: "app", provider: host, resourceResolver: resolver, downloadResources: enabled });
+    const result = await converter.convertApiMessage(input);
+    if (enabled) {
+      expect(result.attachments).toHaveLength(9);
+      expect(result.attachments[0]).toMatchObject({ messageId: "parent", fileKey: "notes" });
+      expect(result.bodyMarkdown).toContain("hello");
+      expect(result.bodyMarkdown).toContain("视频下载失败: clip");
+      expect(result.resourceErrors).toEqual([{ messageId: "child5", fileKey: "clip", type: "video", code: "resolve_failed" }]);
+      expect(result.attachments.some((attachment) => attachment.messageId === "child5" && attachment.fileKey === "inline")).toBe(true);
+    } else {
+      expect(resolver).not.toHaveBeenCalled();
+      expect(result.attachments).toEqual([]);
+      expect(result.resourceErrors).toBeUndefined();
+    }
+    expect(mkdirSync).not.toHaveBeenCalled();
+    expect(mkdir).not.toHaveBeenCalled();
+    expect(open).not.toHaveBeenCalled();
+  });
+
+  it("reports missing resolver, rejects oversized or invalid resources, and bounds host text previews", async () => {
+    const host = { ...provider(), downloadResource: vi.fn(), getTenantAccessToken: vi.fn() };
+    const input = message("file", "file", { file_key: "key", file_name: "notes.txt" });
+    const unavailable = await new FeishuMessageConverter({ appId: "app", provider: host }).convertApiMessage(input);
+    expect(unavailable.resourceErrors?.[0].code).toBe("unavailable");
+    expect(host.downloadResource).not.toHaveBeenCalled();
+    expect(host.getTenantAccessToken).not.toHaveBeenCalled();
+    const converter = new FeishuMessageConverter({
+      appId: "app", provider: host, maxFileSize: 10,
+      resourceResolver: async () => ({ resourceRef: "ref", size: 11 }),
+    });
+    const oversized = await converter.convertApiMessage(input);
+    expect(oversized.resourceErrors?.[0].code).toBe("too_large");
+    expect(oversized.attachments).toEqual([]);
+    const invalid = await new FeishuMessageConverter({ appId: "app", provider: host, resourceResolver: async () => ({ resourceRef: "" }) }).convertApiMessage(input);
+    expect(invalid.resourceErrors?.[0].code).toBe("resolve_failed");
+    const preview = await new FeishuMessageConverter({
+      appId: "app", provider: host,
+      resourceResolver: async () => ({ resourceRef: "persistent:notes", textPreview: { content: "x".repeat(100_000) } }),
+    }).convertApiMessage(input);
+    expect(preview.bodyMarkdown).toContain("内容已截断");
+    expect(preview.bodyMarkdown).not.toContain("x".repeat(65537));
+    const omitted = await new FeishuMessageConverter({ appId: "app", provider: host, resourceResolver: async () => ({ resourceRef: "persistent:notes" }) }).convertApiMessage(input);
+    expect(omitted.bodyMarkdown).toBe("[文件: notes.txt](persistent:notes)");
+    expect(open).not.toHaveBeenCalled();
+    expect(mkdir).not.toHaveBeenCalled();
   });
 });
