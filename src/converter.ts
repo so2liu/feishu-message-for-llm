@@ -7,14 +7,17 @@ import type {
   ChatType,
   ConvertApiMessageOptions,
   ConvertResult,
+  ConversionError,
   ConverterConfig,
   FeishuApiMessage,
+  FeishuDataProvider,
   FeishuMessageEvent,
   FetchChatHistoryOptions,
   HandlerContext,
   HandlerResult,
   Mention,
   MessageMetadata,
+  ResourceResolver,
 } from "./types.js";
 
 const DEFAULT_MAX_PARENT_DEPTH = 5;
@@ -57,19 +60,21 @@ interface ConvertScope {
 }
 
 export class FeishuMessageConverter {
-  private readonly apiClient: FeishuApiClientImpl;
+  private readonly apiClient: FeishuDataProvider;
+  private readonly handlerApiClient: HandlerContext["apiClient"];
   private readonly appId: string;
   private readonly downloadDir: string;
   private readonly maxFileSize?: number;
   private readonly downloadResources: boolean;
   private readonly maxParentDepth: number;
+  private readonly resourceResolver?: ResourceResolver;
 
   constructor(config: ConverterConfig) {
     if (config.appId.trim().length === 0) {
       throw new Error("ConverterConfig.appId must not be empty");
     }
 
-    if (config.appSecret.trim().length === 0) {
+    if (!config.provider && !config.appSecret?.trim()) {
       throw new Error("ConverterConfig.appSecret must not be empty");
     }
 
@@ -94,12 +99,22 @@ export class FeishuMessageConverter {
       throw new Error("ConverterConfig.maxParentDepth must be a non-negative integer");
     }
 
-    this.apiClient = new FeishuApiClientImpl(config.appId, config.appSecret);
+    const builtin = config.provider ? undefined : new FeishuApiClientImpl(config.appId, config.appSecret!);
+    this.apiClient = config.provider ?? builtin!;
+    this.handlerApiClient = {
+      getUserInfo: this.apiClient.getUserInfo.bind(this.apiClient),
+      getChatInfo: this.apiClient.getChatInfo.bind(this.apiClient),
+      getMessage: this.apiClient.getMessage.bind(this.apiClient),
+      getMergeForwardMessages: this.apiClient.getMergeForwardMessages.bind(this.apiClient),
+      getDocMeta: this.apiClient.getDocMeta.bind(this.apiClient),
+      downloadResource: builtin?.downloadResource.bind(builtin),
+    };
     this.appId = config.appId;
     this.downloadDir = config.downloadDir ?? tmpdir();
     this.maxFileSize = config.maxFileSize;
     this.downloadResources = config.downloadResources ?? true;
     this.maxParentDepth = config.maxParentDepth ?? DEFAULT_MAX_PARENT_DEPTH;
+    this.resourceResolver = config.resourceResolver;
   }
 
   async convert(event: FeishuMessageEvent): Promise<ConvertResult> {
@@ -205,7 +220,7 @@ export class FeishuMessageConverter {
     scope: ConvertScope,
     depth: number,
   ): Promise<ConvertResult> {
-    const [sender, parentMessage, handlerResult] = await Promise.all([
+    const [sender, parentResult, handlerResult] = await Promise.all([
       this.resolveSenderInfo(message.senderId, message.senderType, scope),
       message.parentId && !message.deleted
         ? this.resolveParentMessage(message.parentId, scope, depth, message.threadId)
@@ -218,6 +233,9 @@ export class FeishuMessageConverter {
         : this.runHandler(message, scope, depth),
     ]);
 
+    const parentFailure = parentResult && "code" in parentResult ? parentResult : null;
+    const parentMessage = parentResult && !("code" in parentResult) ? parentResult : null;
+
     const referenceBlock = message.parentId && !message.deleted
       ? this.renderReferenceBlock(
           message.parentId,
@@ -227,6 +245,15 @@ export class FeishuMessageConverter {
         )
       : "";
     const bodyMarkdown = this.composeBodyMarkdown(referenceBlock, handlerResult.text);
+    const resourceErrors = [
+      ...(parentMessage?.resourceErrors ?? []),
+      ...(handlerResult.resourceErrors ?? []),
+    ];
+    const conversionErrors = [
+      ...(parentFailure ? [parentFailure] : []),
+      ...(parentMessage?.conversionErrors ?? []),
+      ...(handlerResult.conversionErrors ?? []),
+    ];
 
     return {
       markdown: this.composeMarkdown(sender.senderLabel, bodyMarkdown),
@@ -250,6 +277,8 @@ export class FeishuMessageConverter {
       }),
       rawContent: message.rawContent,
       parentMessage: parentMessage ?? undefined,
+      ...(resourceErrors.length ? { resourceErrors } : {}),
+      ...(conversionErrors.length ? { conversionErrors } : {}),
     };
   }
 
@@ -295,13 +324,14 @@ export class FeishuMessageConverter {
     depth: number,
   ): HandlerContext {
     return {
-      apiClient: this.apiClient,
+      apiClient: this.handlerApiClient,
       mentions,
       messageId,
       messageType,
       downloadDir: this.downloadDir,
       maxFileSize: this.maxFileSize,
       downloadResources: this.downloadResources,
+      resourceResolver: this.resourceResolver,
       resolveSenderLabel: async (apiMessage) =>
         (
           await this.resolveSenderInfo(
@@ -321,7 +351,7 @@ export class FeishuMessageConverter {
     scope: ConvertScope,
     depth: number,
     threadId?: string,
-  ): Promise<ConvertResult | null> {
+  ): Promise<ConvertResult | ConversionError | null> {
     if (depth >= this.maxParentDepth || scope.visitedIds.has(parentId)) {
       return null;
     }
@@ -340,7 +370,7 @@ export class FeishuMessageConverter {
         depth + 1,
       );
     } catch {
-      return null;
+      return { messageId: parentId, operation: "getMessage", code: "read_failed" };
     }
   }
 

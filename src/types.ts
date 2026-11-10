@@ -1,12 +1,41 @@
-export interface ConverterConfig {
+interface ConverterOptions {
   appId: string;
-  appSecret: string;
   downloadDir?: string;
   maxFileSize?: number;
   /** 是否下载图片、文件等资源，默认 true。为 false 时只输出占位文本，不发请求、不写盘 */
   downloadResources?: boolean;
   /** 回复引用最多向上展开几层，默认 5。0 表示不展开，只输出引用行 */
   maxParentDepth?: number;
+  resourceResolver?: ResourceResolver;
+}
+
+export type ConverterConfig = ConverterOptions & (
+  | { provider: FeishuDataProvider; appSecret?: never }
+  | { provider?: never; appSecret: string }
+);
+
+export interface ListChatMessagesParams {
+  pageSize: number;
+  pageToken?: string;
+  startTime?: number;
+  endTime?: number;
+}
+
+export interface ChatMessagePage {
+  items: FeishuApiMessage[];
+  pageToken?: string;
+  hasMore: boolean;
+}
+
+export interface FeishuDataProvider {
+  getUserInfo(openId: string): Promise<{ name: string }>;
+  getChatInfo(chatId: string): Promise<{ name: string }>;
+  getMessage(messageId: string): Promise<FeishuApiMessage>;
+  getMergeForwardMessages(messageId: string): Promise<FeishuApiMessage[]>;
+  getDocMeta(docToken: string, docType: string): Promise<{ title: string }>;
+  getChatMemberNames(chatId: string): Promise<Map<string, string>>;
+  getBotName(): Promise<string>;
+  listChatMessages(chatId: string, params: ListChatMessagesParams): Promise<ChatMessagePage>;
 }
 
 export interface Mention {
@@ -78,9 +107,45 @@ export interface FeishuApiMessage {
 
 export interface Attachment {
   type: "image" | "file" | "audio" | "video" | "sticker";
-  filePath: string;
+  filePath?: string;
+  resourceRef?: string;
+  messageId?: string;
+  fileKey?: string;
+  size?: number;
   mimeType?: string;
   fileName?: string;
+}
+
+export interface ResourceRequest {
+  messageId: string;
+  fileKey: string;
+  type: Attachment["type"];
+  fileName?: string;
+  mimeType?: string;
+  maxSize?: number;
+}
+
+export interface ResolvedResource {
+  resourceRef: string;
+  fileName?: string;
+  mimeType?: string;
+  size?: number;
+  textPreview?: { content: string; truncated?: boolean };
+}
+
+export type ResourceResolver = (request: ResourceRequest) => Promise<ResolvedResource>;
+
+export interface ResourceError {
+  messageId: string;
+  fileKey: string;
+  type: Attachment["type"];
+  code: "unavailable" | "too_large" | "resolve_failed";
+}
+
+export interface ConversionError {
+  messageId: string;
+  operation: "getMessage" | "getMergeForwardMessages";
+  code: "read_failed";
 }
 
 export interface MessageMetadata {
@@ -110,6 +175,8 @@ export interface ConvertResult {
   metadata: MessageMetadata;
   rawContent: string;
   parentMessage?: ConvertResult;
+  resourceErrors?: ResourceError[];
+  conversionErrors?: ConversionError[];
 }
 
 export type ChatType = "p2p" | "group";
@@ -156,7 +223,9 @@ export interface FeishuApiClient {
 }
 
 export interface HandlerContext {
-  apiClient: FeishuApiClient;
+  apiClient: Pick<FeishuApiClient,
+    "getUserInfo" | "getChatInfo" | "getMessage" | "getMergeForwardMessages" | "getDocMeta"
+  > & Partial<Pick<FeishuApiClient, "downloadResource">>;
   mentions: Mention[];
   messageId: string;
   messageType: string;
@@ -164,6 +233,7 @@ export interface HandlerContext {
   maxFileSize?: number;
   /** 未设置时视为 true */
   downloadResources?: boolean;
+  resourceResolver?: ResourceResolver;
   /** 解析合并转发子消息的发送人，返回「名字(id)」 */
   resolveSenderLabel?: (message: FeishuApiMessage) => Promise<string>;
   convertMessageBody: (
@@ -176,6 +246,8 @@ export interface HandlerContext {
 export interface HandlerResult {
   text: string;
   attachments: Attachment[];
+  resourceErrors?: ResourceError[];
+  conversionErrors?: ConversionError[];
 }
 
 export type MessageHandler = (

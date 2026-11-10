@@ -40,7 +40,7 @@ afterEach(() => {
 describe("handleSticker", () => {
   it("downloads sticker images and returns a markdown link", async () => {
     const context = createContext();
-    vi.mocked(context.apiClient.downloadResource).mockImplementation(
+    vi.mocked(context.apiClient.downloadResource!).mockImplementation(
       async (_messageId, _fileKey, _type, savePath) => {
         expect(existsSync(dirname(savePath))).toBe(true);
       },
@@ -74,7 +74,7 @@ describe("handleSticker", () => {
 
   it("returns fallback text when sticker download fails", async () => {
     const context = createContext();
-    vi.mocked(context.apiClient.downloadResource).mockRejectedValue(
+    vi.mocked(context.apiClient.downloadResource!).mockRejectedValue(
       new Error("boom"),
     );
 

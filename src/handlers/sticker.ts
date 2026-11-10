@@ -1,9 +1,8 @@
-import { mkdirSync } from "node:fs";
-import { join } from "node:path";
+
+import { resolveResource, resourceLink, resourceFailure } from "../utils/resource.js";
 
 import type { HandlerContext, HandlerResult } from "../types.js";
 import { parseJsonRecord } from "../utils/json.js";
-import { sanitizeFileName } from "../utils/sanitize.js";
 
 interface StickerContent {
   file_key?: string;
@@ -21,50 +20,16 @@ function parseStickerContent(content: unknown): StickerContent {
   };
 }
 
-export async function handleSticker(
-  content: unknown,
-  context: HandlerContext,
-): Promise<HandlerResult> {
-  if (context.downloadResources === false) {
-    return {
-      text: "[贴纸]",
-      attachments: [],
-    };
-  }
-
+export async function handleSticker(content: unknown, context: HandlerContext): Promise<HandlerResult> {
   const { file_key } = parseStickerContent(content);
-  const resolvedFileKey = file_key ?? "sticker";
-  const messageDir = join(context.downloadDir, sanitizeFileName(context.messageId));
-  const filePath = join(
-    messageDir,
-    `${sanitizeFileName(resolvedFileKey)}.png`,
-  );
-
-  mkdirSync(messageDir, { recursive: true });
-
+  if (context.downloadResources === false) return { text: `[贴纸]`, attachments: [] };
+  const resolvedKey = file_key ?? "sticker";
   try {
-    await context.apiClient.downloadResource(
-      context.messageId,
-      resolvedFileKey,
-      "sticker",
-      filePath,
-      context.maxFileSize,
-    );
-  } catch {
-    return {
-      text: `[贴纸下载失败: ${resolvedFileKey}]`,
-      attachments: [],
-    };
+    const { attachment } = await resolveResource(context, {
+      fileKey: resolvedKey, type: "sticker", mimeType: "image/png",
+    }, `${resolvedKey}.png`);
+    return { text: `[贴纸](${resourceLink(attachment)})`, attachments: [attachment] };
+  } catch (error) {
+    return { text: `[贴纸下载失败: ${resolvedKey}]`, attachments: [], ...resourceFailure(error) };
   }
-
-  return {
-    text: `[贴纸](${filePath})`,
-    attachments: [
-      {
-        type: "sticker",
-        filePath,
-        mimeType: "image/png",
-      },
-    ],
-  };
 }

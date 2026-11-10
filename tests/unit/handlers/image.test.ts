@@ -40,7 +40,7 @@ afterEach(() => {
 describe("handleImage", () => {
   it("downloads image resources and returns a markdown image", async () => {
     const context = createContext();
-    vi.mocked(context.apiClient.downloadResource).mockImplementation(async () => {
+    vi.mocked(context.apiClient.downloadResource!).mockImplementation(async () => {
       expect(existsSync(dirname("/"))).toBe(true);
     });
 
@@ -72,7 +72,7 @@ describe("handleImage", () => {
 
   it("returns fallback text when download fails", async () => {
     const context = createContext();
-    vi.mocked(context.apiClient.downloadResource).mockRejectedValue(
+    vi.mocked(context.apiClient.downloadResource!).mockRejectedValue(
       new Error("boom"),
     );
 
