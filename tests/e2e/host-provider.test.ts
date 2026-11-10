@@ -52,6 +52,67 @@ afterEach(() => {
 });
 
 describe("host data provider", () => {
+  it.each(["event", "api", "history"] as const)("reports failed forwarded reads through %s without exposing provider errors", async (entry) => {
+    const host = provider();
+    const input = message("input", "merge_forward", {});
+    vi.mocked(host.getMergeForwardMessages).mockRejectedValue(new Error("private provider credential"));
+    vi.mocked(host.listChatMessages).mockResolvedValue({ items: [input], hasMore: false });
+    const converter = new FeishuMessageConverter({ appId: "app", provider: host, downloadResources: false });
+    const result = entry === "event" ? await converter.convert(event(input))
+      : entry === "api" ? await converter.convertApiMessage(input)
+      : (await converter.fetchChatHistory("chat")).messages[0];
+    expect(result.conversionErrors).toEqual([{ messageId: "input", operation: "getMergeForwardMessages", code: "read_failed" }]);
+    expect(result.bodyMarkdown).toContain("合并转发消息获取失败: input");
+    expect(JSON.stringify(result)).not.toContain("private provider credential");
+    expect(result.resourceErrors).toBeUndefined();
+  });
+
+  it("aggregates nested forward failures through replies while retaining successful sibling resources", async () => {
+    const host = provider();
+    const input = message("input");
+    input.parent_id = "parent";
+    vi.mocked(host.getMessage).mockResolvedValue(message("parent", "merge_forward", {}));
+    vi.mocked(host.getMergeForwardMessages).mockImplementation(async (id) => {
+      if (id === "broken") throw new Error("temporarily unavailable");
+      return [message("good", "file", { file_key: "key", file_name: "notes.txt" }), message("broken", "merge_forward", {})];
+    });
+    const result = await new FeishuMessageConverter({
+      appId: "app", provider: host, resourceResolver: async () => ({ resourceRef: "persistent:notes" }),
+    }).convertApiMessage(input);
+    const failures = [{ messageId: "broken", operation: "getMergeForwardMessages", code: "read_failed" }];
+    expect(result.conversionErrors).toEqual(failures);
+    expect(result.parentMessage?.conversionErrors).toEqual(failures);
+    expect(result.attachments).toEqual([expect.objectContaining({ messageId: "good", resourceRef: "persistent:notes" })]);
+    expect(result.bodyMarkdown).toContain("hello");
+    expect(result.bodyMarkdown).toContain("合并转发消息获取失败: broken");
+  });
+
+  it("propagates failed ancestor reads and leaves intentional depth bounds without read failures", async () => {
+    const host = provider();
+    const input = message("input");
+    input.parent_id = "parent";
+    const parent = message("parent");
+    parent.parent_id = "missing";
+    vi.mocked(host.getMessage).mockImplementation(async (id) => {
+      if (id === "missing") throw new Error("access denied");
+      return parent;
+    });
+    const converter = new FeishuMessageConverter({ appId: "app", provider: host, downloadResources: false });
+    const result = await converter.convertApiMessage(input);
+    expect(result.conversionErrors).toEqual([{ messageId: "missing", operation: "getMessage", code: "read_failed" }]);
+    expect(result.parentMessage?.conversionErrors).toEqual(result.conversionErrors);
+    expect(result.parentMessage?.bodyMarkdown).toContain("missing");
+    vi.mocked(host.getMessage).mockClear();
+    const bounded = await new FeishuMessageConverter({ appId: "app", provider: host, maxParentDepth: 0 }).convertApiMessage(input);
+    expect(bounded.conversionErrors).toBeUndefined();
+    expect(host.getMessage).not.toHaveBeenCalled();
+    const clean = await converter.convertApiMessage(message("clean"));
+    expect(clean.conversionErrors).toBeUndefined();
+    expect(mkdirSync).not.toHaveBeenCalled();
+    expect(mkdir).not.toHaveBeenCalled();
+    expect(open).not.toHaveBeenCalled();
+  });
+
   it("routes events, API messages, history and nested lookups exclusively to the host", async () => {
     const fetch = vi.fn(() => { throw new Error("Unexpected direct Feishu request"); });
     vi.stubGlobal("fetch", fetch);

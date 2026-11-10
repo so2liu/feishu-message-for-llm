@@ -142,6 +142,7 @@ describe("handleMergeForward", () => {
     await expect(handleMergeForward({}, context)).resolves.toEqual({
       text: "[合并转发消息获取失败: om_merge_123]",
       attachments: [],
+      conversionErrors: [{ messageId: "om_merge_123", operation: "getMergeForwardMessages", code: "read_failed" }],
     });
   });
 

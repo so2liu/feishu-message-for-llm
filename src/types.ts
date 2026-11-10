@@ -142,6 +142,12 @@ export interface ResourceError {
   code: "unavailable" | "too_large" | "resolve_failed";
 }
 
+export interface ConversionError {
+  messageId: string;
+  operation: "getMessage" | "getMergeForwardMessages";
+  code: "read_failed";
+}
+
 export interface MessageMetadata {
   messageId: string;
   messageType: string;
@@ -170,6 +176,7 @@ export interface ConvertResult {
   rawContent: string;
   parentMessage?: ConvertResult;
   resourceErrors?: ResourceError[];
+  conversionErrors?: ConversionError[];
 }
 
 export type ChatType = "p2p" | "group";
@@ -240,6 +247,7 @@ export interface HandlerResult {
   text: string;
   attachments: Attachment[];
   resourceErrors?: ResourceError[];
+  conversionErrors?: ConversionError[];
 }
 
 export type MessageHandler = (

@@ -5,6 +5,7 @@ export type {
   ChatType,
   ConvertApiMessageOptions,
   ConvertResult,
+  ConversionError,
   ConverterConfig,
   FeishuApiMessage,
   FeishuDataProvider,

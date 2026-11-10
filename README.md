@@ -86,6 +86,18 @@ interface ChatMessagePage {
 
 `convert`、`convertApiMessage`、`fetchChatHistory` 共用既有 handlers，包括引用、转发、分享和文档标题。用户/群/标题查询失败沿用可识别占位或保留原链接；历史页查询失败直接拒绝。`getChatMemberNames` 失败后尝试同一 provider 的用户查询。原始正文保留在 `rawContent`；消息、群、发送者、引用及 @ 身份保留在 `metadata`，不要从 Markdown 反推路由。
 
+必要正文读取失败时保留原有降级输出，同时在 `ConvertResult.conversionErrors` 返回结构化错误；包根导出 `ConversionError`：
+
+```typescript
+interface ConversionError {
+  messageId: string;
+  operation: 'getMessage' | 'getMergeForwardMessages';
+  code: 'read_failed';
+}
+```
+
+`messageId` 是读取失败的引用或转发节点。错误沿引用链、嵌套转发向顶层聚合，成功的正文和附件仍保留。无此类错误时省略该字段；名字和文档标题的可选补全失败、主动设置的引用/转发深度限制不属于读取失败。错误不包含 provider 原始异常，也不判定权限拒绝与瞬时故障是否可重试。宿主检查 `result.conversionErrors?.length` 后按自己的策略重试或明确告知，不必解析 Markdown 占位文字。资源错误仍由 `resourceErrors` 单独提供。此行为同样适用于凭据模式；历史页本身读取失败仍直接拒绝，不返回部分页。
+
 ## 宿主持久资源
 
 ```typescript

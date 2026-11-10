@@ -66,6 +66,7 @@ export async function handleMergeForward(
           text: formatQuotedChildMessage(senderLabel, result.text),
           attachments: result.attachments,
           resourceErrors: result.resourceErrors ?? [],
+          conversionErrors: result.conversionErrors ?? [],
         };
       }),
     );
@@ -74,16 +75,19 @@ export async function handleMergeForward(
       (child) => child.attachments,
     );
     const resourceErrors = convertedChildren.flatMap((child) => child.resourceErrors);
+    const conversionErrors = convertedChildren.flatMap((child) => child.conversionErrors);
 
     return {
       text: ["> **合并转发消息：**", ...renderedChildren].join("\n"),
       attachments,
       ...(resourceErrors.length ? { resourceErrors } : {}),
+      ...(conversionErrors.length ? { conversionErrors } : {}),
     };
   } catch {
     return {
       text: `[合并转发消息获取失败: ${context.messageId}]`,
       attachments: [],
+      conversionErrors: [{ messageId: context.messageId, operation: "getMergeForwardMessages", code: "read_failed" }],
     };
   }
 }

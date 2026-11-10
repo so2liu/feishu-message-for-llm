@@ -7,6 +7,7 @@ import type {
   ChatType,
   ConvertApiMessageOptions,
   ConvertResult,
+  ConversionError,
   ConverterConfig,
   FeishuApiMessage,
   FeishuDataProvider,
@@ -219,7 +220,7 @@ export class FeishuMessageConverter {
     scope: ConvertScope,
     depth: number,
   ): Promise<ConvertResult> {
-    const [sender, parentMessage, handlerResult] = await Promise.all([
+    const [sender, parentResult, handlerResult] = await Promise.all([
       this.resolveSenderInfo(message.senderId, message.senderType, scope),
       message.parentId && !message.deleted
         ? this.resolveParentMessage(message.parentId, scope, depth, message.threadId)
@@ -231,6 +232,9 @@ export class FeishuMessageConverter {
           })
         : this.runHandler(message, scope, depth),
     ]);
+
+    const parentFailure = parentResult && "code" in parentResult ? parentResult : null;
+    const parentMessage = parentResult && !("code" in parentResult) ? parentResult : null;
 
     const referenceBlock = message.parentId && !message.deleted
       ? this.renderReferenceBlock(
@@ -244,6 +248,11 @@ export class FeishuMessageConverter {
     const resourceErrors = [
       ...(parentMessage?.resourceErrors ?? []),
       ...(handlerResult.resourceErrors ?? []),
+    ];
+    const conversionErrors = [
+      ...(parentFailure ? [parentFailure] : []),
+      ...(parentMessage?.conversionErrors ?? []),
+      ...(handlerResult.conversionErrors ?? []),
     ];
 
     return {
@@ -269,6 +278,7 @@ export class FeishuMessageConverter {
       rawContent: message.rawContent,
       parentMessage: parentMessage ?? undefined,
       ...(resourceErrors.length ? { resourceErrors } : {}),
+      ...(conversionErrors.length ? { conversionErrors } : {}),
     };
   }
 
@@ -341,7 +351,7 @@ export class FeishuMessageConverter {
     scope: ConvertScope,
     depth: number,
     threadId?: string,
-  ): Promise<ConvertResult | null> {
+  ): Promise<ConvertResult | ConversionError | null> {
     if (depth >= this.maxParentDepth || scope.visitedIds.has(parentId)) {
       return null;
     }
@@ -360,7 +370,7 @@ export class FeishuMessageConverter {
         depth + 1,
       );
     } catch {
-      return null;
+      return { messageId: parentId, operation: "getMessage", code: "read_failed" };
     }
   }
 
